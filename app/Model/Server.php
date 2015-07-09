@@ -561,7 +561,7 @@ class Server extends AppModel {
 					'branch' => 1,
 					'RPZ_policy' => array(
 						'level' => 1,
-						'description' => 'The duration (in seconds) of how long the user will be locked out when the allowed number of login attempts are exhausted.',
+						'description' => 'The policy applied to entries in the RPZ zone.',
 						'value' => 0,
 						'errorMessage' => '',
 						'test' => 'testForRPZBehaviour',
