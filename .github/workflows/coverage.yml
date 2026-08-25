@@ -1,0 +1,118 @@
+# Measures what BOTH test suites actually cover.
+#
+# The PHPUnit suite is measured directly. The live Python suite drives MISP
+# over HTTP, so it is measured by hooking pcov into mod_php and the CLI via
+# auto_prepend_file (build/coverage/covcollect.php) and merging the captures.
+#
+# The ratchet exists because coverage that is not enforced silently decays.
+name: coverage
+
+on:
+  push:
+    branches: [ '2.5' ]
+  pull_request:
+    branches: [ '2.5' ]
+
+env:
+  PHP_VERSION: '8.3'
+  # Floor measured on ff132f4d: union 19.67%. Raise this as tranches land.
+  MIN_UNION: '19.5'
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: bar
+          MARIADB_DATABASE: misp
+          MARIADB_USER: misp
+          MARIADB_PASSWORD: blah
+        ports: [ '3306:3306' ]
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -pbar"
+          --health-interval=5s --health-timeout=3s --health-retries=30
+      redis:
+        image: redis:7
+        ports: [ '6379:6379' ]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+
+      - name: Setup PHP with pcov
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysql, mbstring, xml, opcache, readline, redis, gd, apcu, intl, zip, pcntl, pcov
+          ini-values: memory_limit=2048M, pcov.enabled=1
+
+      # The `zip` BINARY is required, not just ext-zip: MISP shells out to it
+      # when building attachment archives, and its absence surfaces as
+      # `proc_open(): posix_spawn() failed: No such file or directory`.
+      - name: Install system deps
+        run: |
+          sudo apt-get -y update --allow-releaseinfo-change
+          sudo apt-get -y install curl zip unzip gnupg python3 python3-pip \
+                                  python3-virtualenv apache2 libapache2-mod-php${{ env.PHP_VERSION }}
+
+      - name: Install PHP dependencies
+        run: cd app && composer install --no-progress --no-interaction
+
+      # -- unit suite ------------------------------------------------------
+      - name: Unit suite with coverage
+        run: |
+          cd app
+          ./Vendor/bin/phpunit -c phpunit.xml --testsuite unit \
+            --coverage-clover ../clover.xml
+
+      # -- live suite ------------------------------------------------------
+      - name: Install and configure MISP
+        run: bash build/coverage/ci_setup_misp.sh
+
+      - name: Live suite under instrumentation
+        env:
+          MISP_COV_DIR: ${{ github.workspace }}/cov
+          MISP_APP_ROOT: ${{ github.workspace }}/app/
+        run: |
+          mkdir -p "$MISP_COV_DIR" && chmod 777 "$MISP_COV_DIR"
+          touch "$MISP_COV_DIR/ENABLED"
+          bash build/coverage/ci_run_live_suite.sh
+
+      # -- report ----------------------------------------------------------
+      - name: Merge and report
+        env:
+          MISP_COV_DIR: ${{ github.workspace }}/cov
+        run: |
+          python3 build/coverage/merge_coverage.py "$MISP_COV_DIR" merged.json \
+            "${{ github.workspace }}/app/"
+          python3 build/coverage/report.py clover.xml merged.json \
+            --json coverage-summary.json --min-union "$MIN_UNION" \
+            | tee coverage-report.txt
+
+      - name: Summarise on the run page
+        if: ${{ always() }}
+        run: |
+          {
+            echo '## Coverage'
+            echo '```'
+            cat coverage-report.txt 2>/dev/null || echo 'no report produced'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            clover.xml
+            merged.json
+            coverage-summary.json
+            coverage-report.txt
