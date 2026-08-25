@@ -140,12 +140,35 @@ Expected: `Tests: 477` with no errors, and `Generating code coverage report in C
 python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('clover.xml').getroot(); print(len([f for f in r.iter('file')]), 'files')"
 ```
 
-Expected: `590 files`.
+Expected: `528 files` — that is 590 source files minus the 62 vendored plugin files
+(DebugKit 50, CakeResque 12) that the `<exclude>` block removes. If you see 590, the
+exclude is not being applied.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Clear the deprecation warnings the upgrade surfaces**
+
+PHPUnit 9 deprecates `assertRegExp()`. Five call sites use it; the upgrade is what surfaces
+them, so they are fixed in this commit rather than left as noise:
 
 ```bash
-git add app/composer.json app/composer.lock app/phpunit.xml app/Test/bootstrap.php
+sed -i 's/\$this->assertRegExp(/$this->assertMatchesRegularExpression(/g' \
+    app/Test/EventTemplateInfoRendererTest.php app/Test/WidgetCacheTest.php
+```
+
+Verify no call sites remain and the suite is clean:
+
+```bash
+grep -rn 'assertRegExp(' app/Test/ || echo "none remaining"
+./app/Vendor/bin/phpunit -c app/phpunit.xml | tail -3
+```
+
+Expected: `none remaining`, then `Tests: 477, Assertions: 1087, Skipped: 2` with **no**
+warnings line.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add app/composer.json app/composer.lock app/phpunit.xml app/Test/bootstrap.php \
+        app/Test/EventTemplateInfoRendererTest.php app/Test/WidgetCacheTest.php
 git commit -S -m "test: upgrade PHPUnit to 9.6 and add phpunit.xml so coverage runs on PHP 8
 
 php-code-coverage 7 (bundled with PHPUnit ^8) refuses to run on PHP 8,
