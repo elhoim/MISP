@@ -82,13 +82,16 @@ for kv in "Session.autoRegenerate 0" "Session.timeout 600" "Session.cookieTimeou
           "MISP.redis_host 127.0.0.1" "MISP.redis_port 6379" "MISP.redis_database 13" \
           "GnuPG.email info@admin.test" "GnuPG.homedir ${WORKSPACE}/.gnupg" \
           "GnuPG.password travistest" "MISP.download_gpg_from_homedir 1" \
-          "SimpleBackgroundJobs.enabled 0" "MISP.server_settings_skip_backup_rotate 1" \
-          "MISP.python_bin ${WORKSPACE}/venv/bin/python"; do
+          "SimpleBackgroundJobs.enabled 0" "MISP.server_settings_skip_backup_rotate 1"; do
     # shellcheck disable=SC2086
     cake Admin setSetting $kv
 done
 cake Admin setSetting --force debug true
 cake Admin setSetting --force "Security.allow_self_registration" true
+
+# MISP.python_bin is deliberately NOT set here: the virtualenv does not exist
+# until ci_run_live_suite.sh creates it, and MISP validates the path, so
+# setting it now is rejected with "Binary file not executable".
 
 cake Admin updateJSON
 cake Admin live 1

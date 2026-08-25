@@ -18,6 +18,11 @@ python3 -m virtualenv -p python3 ./venv
 pip install -q -r requirements.txt
 pip install -q pytest lxml ./PyMISP
 
+# Only now does the interpreter exist, so this is where MISP can be pointed
+# at it - setting it during install is rejected as "Binary file not
+# executable".
+sudo -u www-data app/Console/cake Admin setSetting "MISP.python_bin" "${WORKSPACE}/venv/bin/python"
+
 cat > PyMISP/tests/keys.py <<KEYS
 url = "http://${HOST}"
 key = "${AUTH}"
