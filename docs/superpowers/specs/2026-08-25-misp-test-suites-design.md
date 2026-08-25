@@ -242,20 +242,56 @@ Environment lessons folded into the CI/dev docs (each cost debugging time this s
 
 ---
 
-## 10. Sequencing and expected coverage
+## 10. Sequencing — projected vs actual
 
-| Phase | Contents | Union coverage |
-|---|---|---:|
-| — | today | 19.67 % |
-| **P0** | bootstrap, phpunit.xml, PHPUnit 9.6, coverage CI | 19.67 % (enables everything) |
-| **P1** | U1 + U2 conformance + behaviour (zero-overlap, 10,341 stmts) | ~25 % |
-| **P2** | U3–U5 + `testlive_dashboards` + `testlive_workflows` | ~30 % |
-| **P3** | U6–U9 + `testlive_export_formats` | ~33 % |
-| **P4** | Layer 2: correlation equivalence + console shells | ~38 % |
+| Phase | Contents | Projected | **Actual** |
+|---|---|---:|---:|
+| — | baseline (`ff132f4d`, filtered) | — | **19.67 %** |
+| **P0** | bootstrap, phpunit.xml, PHPUnit 9.6, coverage CI | 19.67 % | **19.67 %** ✅ |
+| **P1a** | widget + workflow-module conformance | ~25 % | **22.67 %** |
+| **P1b** | export format contract | — | **23.28 %** |
+| **P1c** | pure Lib/Tools behaviour + NavbarHelper | — | **23.41 %** |
+| P2–P4 | remaining tranches | ~38 % | not yet run |
 
-Estimates assume ~75 % coverage of each target, not 100 %, and account for the 13.3 % already-live-covered overlap. Roughly 9,000–11,000 lines of new test code across 15–18 tranches.
+Subsystem movement from P1:
 
----
+| Subsystem | Unit before | Unit after | Live |
+|---|---:|---:|---:|
+| `Lib/Dashboard` | 10.40 % | **44.26 %** | 0.00 % |
+| `Model/WorkflowModules` | 0.00 % | **35.97 %** | 0.00 % |
+| `Lib/Export` | 0.00 % | **34.02 %** | 20.58 % |
+| `Lib/Tools` | 13.08 % | **15.36 %** | 22.27 % |
+| `View/Helper` | 0.00 % | 0.28 % | 3.99 % |
+
+### What P1 actually taught
+
+**Reflection-only conformance adds no coverage.** The first cut of the widget
+and module suites asserted contracts through `ReflectionClass` and moved the
+number by *zero*: reading property defaults never executes a method body. All
+of the gain came from *constructing* every widget and module and driving
+`handler()`. The conformance assertions are still worth keeping — they catch a
+malformed *new* widget, which no per-file test does — but they must be paired
+with execution or they buy safety without coverage. This is the §11 risk
+landing in practice, on the first attempt.
+
+**Execution needs a support layer, not just stubs.** Three additions were
+required before anything would run: a permissive `FakeModel` for
+`ClassRegistry`-resolved collaborators, CakePHP's global helpers (`__()` above
+all — MISP source calls it pervasively), and an autoloader over `app/Lib`,
+because `App::uses()` is a no-op under the stubs.
+
+**The zero-overlap prediction held exactly.** `Lib/Dashboard` and
+`Model/WorkflowModules` were 0.00 % live, so their unit gains passed into the
+union nearly 1:1 (+3.02 pp unit → +3.00 pp union).
+
+**`View/Helper` resists layer 1.** `NavbarHelper` is 886 statements but
+yielded 60: with injected collaborators returning empty, the per-controller
+branches short-circuit. Driving them needs real `Acl`/`Html` helpers, which is
+integration-layer work — this tranche should move to Layer 2.
+
+**`AttachmentObjectBuilder` (804 stmts, 0 % in both) was deferred.** Its
+`build()` requires real binary samples and installed object templates; it is a
+fixtures project, not a quick win.
 
 ## 11. Risks
 
