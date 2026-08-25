@@ -22,6 +22,12 @@ sudo chmod -R 775 "$WORKSPACE/app/tmp" "$WORKSPACE/app/files"
 namei -m "$WORKSPACE" || true
 sudo chmod +x / /home /home/runner /home/runner/work 2>/dev/null || true
 
+# `cake Admin setSetting` rewrites app/Config/config.php, so www-data needs
+# write access to that directory or every setting change is rejected with
+# "MISP tried to save a malformed config file or you dont have permission".
+sudo chown -R "$USER":www-data "$WORKSPACE/app/Config"
+sudo chmod -R 777 "$WORKSPACE/app/Config"
+
 # --- config ----------------------------------------------------------------
 cp --update=none app/Config/bootstrap.default.php app/Config/bootstrap.php
 cp --update=none app/Config/core.default.php      app/Config/core.php
