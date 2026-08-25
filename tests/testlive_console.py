@@ -7,9 +7,10 @@ invoking the cake console directly. Under the coverage instrumentation
 (build/coverage/covcollect.php is an auto_prepend_file for the CLI SAPI too)
 these runs are attributed like any other.
 
-Only read-only, side-effect-free invocations are used: each shell's help and
-argument-validation paths, which is where the argument parsing and output
-formatting live.
+Only read-only invocations are used, and each shell is probed with an INVALID
+subcommand rather than bare. That distinction matters: a bare invocation can
+trigger a shell's default action, and `cake Live` with no argument takes the
+instance offline.
 
 Usage:
     MISP_ROOT=/var/www/MISP python3 testlive_console.py -v
@@ -22,12 +23,25 @@ import unittest
 MISP_ROOT = os.environ.get("MISP_ROOT", "/var/www/MISP")
 CAKE = os.path.join(MISP_ROOT, "app", "Console", "cake")
 
-# Shells that are safe to invoke with no arguments or with `help`: they print
-# usage and exit rather than mutating the instance.
+# Shells probed for their usage output.
+#
+# DELIBERATELY EXCLUDED, because invoking them bare MUTATES the instance:
+#   Live      - `cake Live` with no argument takes MISP OFFLINE. Running it
+#               here once set MISP.live=false and every PyMISP-based suite
+#               that followed failed to connect, with an error that pointed
+#               at PyMISP rather than at the cause.
+#   Password  - resets credentials.
+#   Admin     - has subcommands that write settings; probed only with an
+#               invalid subcommand below, never bare.
 SHELLS = [
-    "Admin", "Event", "Server", "User", "Training", "Password",
-    "EventGraph", "Live", "Log", "Sighting", "Statistics",
+    "Admin", "Event", "Server", "User", "Training",
+    "EventGraph", "Log", "Sighting", "Statistics",
 ]
+
+# Probing with an invalid subcommand forces the option parser to print usage
+# and exit. A bare invocation can run a shell's DEFAULT action, which is how
+# `cake Live` silently disabled the instance.
+USAGE_PROBE = "__usage_probe_not_a_subcommand__"
 
 
 def run_cake(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
@@ -44,12 +58,16 @@ class TestConsoleShells(unittest.TestCase):
             raise unittest.SkipTest(f"cake console not found at {CAKE}")
 
     def test_console_lists_available_commands(self) -> None:
+        """A bare `cake` lists the available shells and runs none of them.
+
+        This one IS safe without the probe: with no shell name the dispatcher
+        prints its command list. The hazard is `cake <Shell>` with no
+        subcommand, which can run that shell's default action.
+        """
         result = run_cake()
-        self.assertLess(result.returncode, 2, f"bare cake invocation failed: {result.stderr[:300]}")
-        self.assertTrue(
-            result.stdout or result.stderr,
-            "the console must print something when invoked with no command",
-        )
+        output = (result.stdout or "") + (result.stderr or "")
+        self.assertTrue(output.strip(), "the console must print its command list")
+        self.assertNotIn("Fatal error", output, "listing commands must not fatal")
 
     def test_each_shell_reports_its_usage(self) -> None:
         """Every shell must respond to an unknown/absent subcommand with usage.
@@ -60,7 +78,7 @@ class TestConsoleShells(unittest.TestCase):
         failures = []
         for shell in SHELLS:
             try:
-                result = run_cake(shell)
+                result = run_cake(shell, USAGE_PROBE)
             except subprocess.TimeoutExpired:
                 failures.append((shell, "timeout"))
                 continue
@@ -73,7 +91,7 @@ class TestConsoleShells(unittest.TestCase):
         self.assertEqual([], failures, f"shells failed to report usage: {failures}")
 
     def test_admin_shell_exposes_its_subcommands(self) -> None:
-        result = run_cake("Admin")
+        result = run_cake("Admin", USAGE_PROBE)
         output = (result.stdout or "") + (result.stderr or "")
         self.assertNotIn("Fatal error", output)
         self.assertTrue(output.strip(), "Admin shell must print its subcommands")
