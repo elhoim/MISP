@@ -1,6 +1,6 @@
 <?php
-require_once __DIR__ . '/../Lib/Tools/JsonTool.php';
-require_once __DIR__ . '/../Lib/Tools/JSONConverterTool.php';
+require_once __DIR__ . '/../../Lib/Tools/JsonTool.php';
+require_once __DIR__ . '/../../Lib/Tools/JSONConverterTool.php';
 
 use PHPUnit\Framework\TestCase;
 

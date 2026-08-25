@@ -19,7 +19,7 @@
  * exact advertised metadata a real remote would return.
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -35,7 +35,7 @@ if (!class_exists('App', false)) {
     }
 }
 
-require_once __DIR__ . '/../Lib/Tools/ServerSyncTool.php';
+require_once __DIR__ . '/../../Lib/Tools/ServerSyncTool.php';
 
 /**
  * ServerSyncTool with the HTTP layer removed: the constructor is bypassed (no

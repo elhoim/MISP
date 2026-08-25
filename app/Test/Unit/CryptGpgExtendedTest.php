@@ -1,7 +1,7 @@
 <?php
-require_once __DIR__ . '/../Lib/Tools/GpgTool.php';
-require_once __DIR__ . '/../Lib/Tools/TmpFileTool.php';
-require_once __DIR__ . '/../Lib/Tools/CryptGpgExtended.php';
+require_once __DIR__ . '/../../Lib/Tools/GpgTool.php';
+require_once __DIR__ . '/../../Lib/Tools/TmpFileTool.php';
+require_once __DIR__ . '/../../Lib/Tools/CryptGpgExtended.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -17,7 +17,7 @@ class GpgToolTest extends TestCase
     public function testSignAndVerify()
     {
         $gpg = $this->init();
-        include __DIR__ . '/../Config/config.php';
+        include __DIR__ . '/../../Config/config.php';
         $gpg->addSignKey($config['GnuPG']['email'], $config['GnuPG']['password']);
 
         $testString = 'ahojSvete';
@@ -53,7 +53,7 @@ class GpgToolTest extends TestCase
     private function init(): CryptGpgExtended
     {
         require_once 'Crypt/GPG.php';
-        include __DIR__ . '/../Config/config.php';
+        include __DIR__ . '/../../Config/config.php';
 
         $options = [
             'homedir' => $config['GnuPG']['homedir'],

@@ -19,9 +19,9 @@ if (!class_exists('App')) {
     }
 }
 
-require_once __DIR__ . '/../Vendor/autoload.php';
-require_once __DIR__ . '/../Lib/Dashboard/Tools/WidgetSchema.php';
-require_once __DIR__ . '/../Lib/Dashboard/Tools/CanonicalTypeAdapter.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
+require_once __DIR__ . '/../../Lib/Dashboard/Tools/WidgetSchema.php';
+require_once __DIR__ . '/../../Lib/Dashboard/Tools/CanonicalTypeAdapter.php';
 
 use PHPUnit\Framework\TestCase;
 

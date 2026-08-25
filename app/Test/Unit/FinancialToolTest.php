@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../Lib/Tools/FinancialTool.php';
+require_once __DIR__ . '/../../Lib/Tools/FinancialTool.php';
 
 use PHPUnit\Framework\TestCase;
 

@@ -18,29 +18,12 @@
  * (US, RU, IR, GB, DE, FR, CN, JP, KR).
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
 
 use PHPUnit\Framework\TestCase;
 
 // ---- Framework class stubs --------------------------------------
 
-if (!class_exists('ClassRegistry', false)) {
-    class ClassRegistry
-    {
-        public static $instances = [];
-        public static function init($name)
-        {
-            if (!isset(self::$instances[$name])) {
-                self::$instances[$name] = new PewPewFakeModel();
-            }
-            return self::$instances[$name];
-        }
-        public static function reset()
-        {
-            self::$instances = [];
-        }
-    }
-}
 
 class PewPewFakeModel
 {
@@ -71,7 +54,7 @@ if (!defined('PPM_TEST_WWW_ROOT')) {
     define('WWW_ROOT', PPM_TEST_WWW_ROOT);
 }
 
-require_once __DIR__ . '/../Lib/Dashboard/PewPewMapWidget.php';
+require_once __DIR__ . '/../../Lib/Dashboard/PewPewMapWidget.php';
 
 
 class PewPewMapWidgetTest extends TestCase
@@ -85,6 +68,7 @@ class PewPewMapWidgetTest extends TestCase
     protected function setUp(): void
     {
         ClassRegistry::reset();
+        ClassRegistry::$factory = function ($name) { return new PewPewFakeModel(); };
         $this->eventTag = ClassRegistry::init('EventTag');
         // Centroid fixture covers all ISOs used across tests.
         $centroids = [

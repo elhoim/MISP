@@ -17,7 +17,7 @@
  * live MISP.
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
 
 if (!class_exists('App', false)) {
     class App
@@ -41,12 +41,12 @@ if (!function_exists('__')) {
     }
 }
 
-require_once __DIR__ . '/../Lib/Tools/EventTemplateDependencyMissingException.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateDependencies.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateValidator.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateInfoRenderer.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateInstantiationException.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateInstantiator.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateDependencyMissingException.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateDependencies.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateValidator.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateInfoRenderer.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateInstantiationException.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateInstantiator.php';
 
 use PHPUnit\Framework\TestCase;
 

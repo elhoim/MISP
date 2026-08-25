@@ -15,7 +15,7 @@
  *   - non-string template inputs yielding an empty string.
  */
 
-require_once __DIR__ . '/../Lib/Tools/EventTemplateInfoRenderer.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateInfoRenderer.php';
 
 use PHPUnit\Framework\TestCase;
 

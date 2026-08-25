@@ -36,7 +36,7 @@ if (!class_exists('Inflector')) {
     }
 }
 
-require_once __DIR__ . '/../Lib/Dashboard/Tools/WidgetCache.php';
+require_once __DIR__ . '/../../Lib/Dashboard/Tools/WidgetCache.php';
 
 // --- stub widgets ---------------------------------------------------------
 

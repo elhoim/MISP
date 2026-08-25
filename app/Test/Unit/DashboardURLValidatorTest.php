@@ -9,8 +9,8 @@
  * EventTemplateValidatorTest stubs App).
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
-require_once __DIR__ . '/../Lib/Dashboard/Tools/DashboardURLValidator.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
+require_once __DIR__ . '/../../Lib/Dashboard/Tools/DashboardURLValidator.php';
 
 if (!class_exists('Configure', false)) {
     class Configure

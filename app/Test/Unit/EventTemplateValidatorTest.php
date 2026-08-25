@@ -19,7 +19,7 @@
  * the code paths that would invoke it.
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
 
 if (!class_exists('App', false)) {
     class App
@@ -43,9 +43,9 @@ if (!function_exists('__')) {
     }
 }
 
-require_once __DIR__ . '/../Lib/Tools/EventTemplateDependencyMissingException.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateDependencies.php';
-require_once __DIR__ . '/../Lib/Tools/EventTemplateValidator.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateDependencyMissingException.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateDependencies.php';
+require_once __DIR__ . '/../../Lib/Tools/EventTemplateValidator.php';
 
 use PHPUnit\Framework\TestCase;
 

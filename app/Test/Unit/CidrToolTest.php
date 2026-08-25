@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../Lib/Tools/CidrTool.php';
+require_once __DIR__ . '/../../Lib/Tools/CidrTool.php';
 
 use PHPUnit\Framework\TestCase;
 

@@ -14,8 +14,8 @@
  * deliverable / non-deliverable / non-parseable lines.
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
-require_once __DIR__ . '/../Lib/Tools/MailLogTool.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
+require_once __DIR__ . '/../../Lib/Tools/MailLogTool.php';
 
 use PHPUnit\Framework\TestCase;
 

@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../Lib/Tools/ComplexTypeTool.php';
+require_once __DIR__ . '/../../Lib/Tools/ComplexTypeTool.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -66,7 +66,7 @@ CSV;
     public function testCheckCSVTestFile(): void
     {
         $complexTypeTool = new ComplexTypeTool();
-        $results = $complexTypeTool->checkCSV(file_get_contents(__DIR__ . '/../../tests/event.csv'));
+        $results = $complexTypeTool->checkCSV(file_get_contents(__DIR__ . '/../../../tests/event.csv'));
         $this->assertCount(37, $results);
     }
 

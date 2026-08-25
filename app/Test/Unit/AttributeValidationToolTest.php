@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../Lib/Tools/AttributeValidationTool.php';
+require_once __DIR__ . '/../../Lib/Tools/AttributeValidationTool.php';
 
 use PHPUnit\Framework\TestCase;
 

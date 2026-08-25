@@ -16,7 +16,7 @@
  * entirely — the live sink is exercised for real at the T3/T4 sync E2E).
  */
 
-require_once __DIR__ . '/../Vendor/autoload.php';
+require_once __DIR__ . '/../../Vendor/autoload.php';
 
 // -------- framework stubs (must exist BEFORE Collection.php loads) --------
 
@@ -75,25 +75,6 @@ if (!class_exists('CakeText', false)) {
 // auto-creates a find()/responses fake for any unregistered name (never null) —
 // so a shared-process run doesn't break PewPew. Our own needs are met by
 // pre-registering the Event double into $instances before init() is reached.
-if (!class_exists('ClassRegistry', false)) {
-    class ClassRegistry
-    {
-        public static $instances = array();
-
-        public static function init($name)
-        {
-            if (!isset(self::$instances[$name])) {
-                self::$instances[$name] = new CollectionTestFakeModel();
-            }
-            return self::$instances[$name];
-        }
-
-        public static function reset()
-        {
-            self::$instances = array();
-        }
-    }
-}
 
 if (!class_exists('CollectionTestFakeModel', false)) {
     class CollectionTestFakeModel
@@ -141,7 +122,7 @@ if (!class_exists('AppModel', false)) {
     }
 }
 
-require_once __DIR__ . '/../Model/Collection.php';
+require_once __DIR__ . '/../../Model/Collection.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -248,6 +229,7 @@ class CollectionCaptureTest extends TestCase
     {
         Configure::reset();
         ClassRegistry::reset();
+        ClassRegistry::$factory = function ($name) { return new CollectionTestFakeModel(); };
 
         $this->collection = new TestableCollection();
         $this->orgc = new StubOrgc();
