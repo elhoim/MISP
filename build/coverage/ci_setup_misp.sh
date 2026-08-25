@@ -22,18 +22,21 @@ sudo chmod -R 775 "$WORKSPACE/app/tmp" "$WORKSPACE/app/files"
 namei -m "$WORKSPACE" || true
 sudo chmod +x / /home /home/runner /home/runner/work 2>/dev/null || true
 
-# `cake Admin setSetting` rewrites app/Config/config.php, so www-data needs
-# write access to that directory or every setting change is rejected with
-# "MISP tried to save a malformed config file or you dont have permission".
-sudo chown -R "$USER":www-data "$WORKSPACE/app/Config"
-sudo chmod -R 777 "$WORKSPACE/app/Config"
-
 # --- config ----------------------------------------------------------------
 cp --update=none app/Config/bootstrap.default.php app/Config/bootstrap.php
 cp --update=none app/Config/core.default.php      app/Config/core.php
 cp --update=none app/Config/config.default.php    app/Config/config.php
 cp --update=none build/database.php               app/Config/database.php
 cp --update=none build/email.php                  app/Config/email.php
+
+# Must come AFTER the copies above: chmodding the directory first leaves the
+# newly created config.php owned by the runner and mode 644, so
+# `cake Admin setSetting` - which rewrites the file in place - is rejected
+# with "MISP tried to save a malformed config file or you dont have
+# permission to write to config file". main.yml applies these perms after
+# copying for the same reason.
+sudo chown -R "$USER":www-data "$WORKSPACE/app/Config"
+sudo chmod -R 777 "$WORKSPACE/app/Config"
 
 # --- database --------------------------------------------------------------
 mysql -h 127.0.0.1 --port 3306 -u root -pbar \
