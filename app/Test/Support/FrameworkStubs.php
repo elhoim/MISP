@@ -103,6 +103,11 @@ class FrameworkStubs
                 public static function camelize($s) { return str_replace(" ", "", ucwords(str_replace("_", " ", $s))); }
                 public static function pluralize($s) { return $s . "s"; }
                 public static function singularize($s) { return rtrim($s, "s"); }
+                public static function humanize($s) { return str_replace("_", " ", ucwords($s, "_")); }
+                public static function tableize($s) { return strtolower(preg_replace("/(?<!^)[A-Z]/", "_$0", $s)) . "s"; }
+                public static function classify($s) { return str_replace(" ", "", ucwords(str_replace("_", " ", rtrim($s, "s")))); }
+                public static function variable($s) { return lcfirst(str_replace(" ", "", ucwords(str_replace("_", " ", $s)))); }
+                public static function slug($s, $r = "-") { return preg_replace("/[^a-zA-Z0-9]+/", $r, $s); }
             }');
         }
         if (!class_exists('CakeLog', false)) {
@@ -115,9 +120,24 @@ class FrameworkStubs
             eval('class Router { public static function url($u = null, $f = false) { return is_string($u) ? $u : "/"; } }');
         }
         if (!class_exists('Hash', false)) {
+            // Enough of Cake's Hash surface for constructors to run. Anything
+            // whose behaviour a test actually asserts should use the real data
+            // rather than relying on these returning empty.
             eval('class Hash {
                 public static function extract($d, $p) { return []; }
                 public static function get($d, $p, $def = null) { return $def; }
+                public static function combine($d, $k, $v = null, $g = null) { return []; }
+                public static function merge($d, $m) { return is_array($d) ? $d : []; }
+                public static function insert($d, $p, $v = null) { return $d; }
+                public static function remove($d, $p) { return $d; }
+                public static function sort($d, $p, $dir = "asc", $type = "regular") { return $d; }
+                public static function filter($d, $cb = null) { return is_array($d) ? array_filter($d) : []; }
+                public static function map($d, $p, $f) { return []; }
+                public static function apply($d, $p, $f) { return []; }
+                public static function numeric($a) { return false; }
+                public static function dimensions($d) { return 1; }
+                public static function maxDimensions($d) { return 1; }
+                public static function normalize($d, $assoc = true) { return is_array($d) ? $d : []; }
             }');
         }
 
@@ -146,6 +166,53 @@ class FrameworkStubs
         if (!class_exists('PaginatorHelper', false))        { eval('class PaginatorHelper extends Helper {}'); }
         if (!class_exists('BaseAuthenticate', false))       { eval('class BaseAuthenticate { public function __construct($c = null, $s = []) {} }'); }
         if (!class_exists('AbstractPasswordHasher', false)) { eval('class AbstractPasswordHasher { public function __construct($c = []) {} }'); }
+
+        // Resolve MISP's own Lib classes on demand. Source files declare their
+        // dependencies with App::uses(), which is a no-op here, so without this
+        // any collaborator a unit reaches for at runtime is simply missing.
+        spl_autoload_register(static function ($class) {
+            if (strpos($class, '\\') !== false) {
+                return; // namespaced: not MISP's global Lib classes
+            }
+            static $dirs = [
+                'Lib/Tools/',
+                'Lib/Dashboard/',
+                'Lib/Dashboard/Tools/',
+                'Lib/Export/',
+                'Lib/Tools/BackgroundJobs/',
+            ];
+            foreach ($dirs as $dir) {
+                $file = APP . $dir . $class . '.php';
+                if (is_file($file)) {
+                    require_once $file;
+                    return;
+                }
+            }
+        });
+
+        // CakePHP's global helper functions. MISP source calls __() pervasively;
+        // without it, any constructor that builds a translated label fatals.
+        if (!function_exists('__')) {
+            eval('function __($s, $args = null) {
+                if ($args === null) { return $s; }
+                if (!is_array($args)) { $args = array_slice(func_get_args(), 1); }
+                return vsprintf($s, $args);
+            }');
+        }
+        if (!function_exists('__n')) {
+            eval('function __n($s, $p, $c, $args = null) { return $c === 1 ? $s : $p; }');
+        }
+        if (!function_exists('h')) {
+            eval('function h($text, $double = true, $charset = null) {
+                return is_string($text) ? htmlspecialchars($text, ENT_QUOTES, "UTF-8", $double) : $text;
+            }');
+        }
+        if (!function_exists('pr')) {
+            eval('function pr($var) { return null; }');
+        }
+        if (!function_exists('debug')) {
+            eval('function debug($var, $showHtml = null, $showFrom = true) { return null; }');
+        }
 
         foreach ([
             'CakeException', 'NotFoundException', 'MethodNotAllowedException',
