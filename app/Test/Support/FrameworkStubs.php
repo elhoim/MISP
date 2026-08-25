@@ -95,6 +95,14 @@ class FrameworkStubs
         if (!class_exists('CakeText', false)) {
             eval('class CakeText {
                 public static function tokenize($d, $s = ",", $l = "(", $r = ")") { return explode($s, $d); }
+                public static function uuid() {
+                    return sprintf("%04x%04x-%04x-4%03x-%04x-%04x%04x%04x",
+                        mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff),
+                        mt_rand(0, 0x0fff), mt_rand(0, 0x3fff) | 0x8000,
+                        mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff));
+                }
+                public static function insert($str, $data, $options = []) { return $str; }
+                public static function cleanInsert($str, $options = []) { return $str; }
             }');
         }
         if (!class_exists('Inflector', false)) {
@@ -150,10 +158,42 @@ class FrameworkStubs
             'CakeEventManager'       => 'class CakeEventManager { public function attach($c = null, $e = null, $o = []) {} public function dispatch($event) {} }',
             'CakeSession'            => 'class CakeSession { public static function read($k = null) { return null; } public static function write($k, $v = null) {} }',
             'Folder'                 => 'class Folder { public function __construct($p = null, $c = false, $m = false) {} }',
-            'File'                   => 'class File { public function __construct($p = null, $c = false, $m = 0755) {} }',
+            'File'                   => 'class File {
+                public $path;
+                private $buffer = "";
+                public function __construct($p = null, $c = false, $m = 0755) { $this->path = $p; }
+                public function write($data, $mode = "w", $force = false) { $this->buffer = $data; return true; }
+                public function append($data, $force = false) { $this->buffer .= $data; return true; }
+                public function read($bytes = false, $mode = "rb", $force = false) { return $this->buffer; }
+                public function delete() { return true; }
+                public function create() { return true; }
+                public function close() { return true; }
+                public function exists() { return true; }
+                public function name() { return basename((string)$this->path); }
+                public function size() { return strlen($this->buffer); }
+            }',
             'Validation'             => 'class Validation { public static function ip($v) { return filter_var($v, FILTER_VALIDATE_IP) !== false; } public static function url($v) { return filter_var($v, FILTER_VALIDATE_URL) !== false; } }',
             'Set'                    => 'class Set {}',
-            'Xml'                    => 'class Xml { public static function build($d, $o = []) { return null; } public static function toArray($x) { return []; } }',
+            'Xml'                    => 'class Xml {
+                public static function build($d, $o = []) { return null; }
+                public static function toArray($x) { return []; }
+                public static function fromArray($input, $options = []) {
+                    $w = new \\XMLWriter(); $w->openMemory(); $w->startDocument("1.0", "UTF-8");
+                    $write = function ($data, $parent) use (&$write, $w) {
+                        foreach ((array)$data as $key => $value) {
+                            $name = is_numeric($key) ? $parent : (string)$key;
+                            if (is_array($value) || is_object($value)) {
+                                $w->startElement($name); $write($value, $name); $w->endElement();
+                            } else {
+                                $w->writeElement($name, (string)$value);
+                            }
+                        }
+                    };
+                    $write($input, "item");
+                    $w->endDocument();
+                    return new \\SimpleXMLElement($w->outputMemory() ?: "<root/>");
+                }
+            }',
             'ConnectionManager'      => 'class ConnectionManager { public static function getDataSource($n = null) { return new \\stdClass(); } }',
             'DboSource'              => 'class DboSource {}',
         ];
