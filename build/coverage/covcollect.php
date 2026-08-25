@@ -18,17 +18,26 @@
  *   MISP_APP_ROOT  app root prefix files must match  (default /var/www/MISP/app/)
  */
 
-$covDir = getenv('MISP_COV_DIR') ?: '/cov';
+// Resolution order matters. Apache is started before the step that exports
+// MISP_COV_DIR/MISP_APP_ROOT, so mod_php never sees those variables and would
+// silently fall back to defaults that match nothing - producing captures that
+// filter down to zero lines. ci_setup_misp.sh therefore writes absolute paths
+// into covconfig.php, which both SAPIs can read regardless of environment.
+$covConfig = @include __DIR__ . '/covconfig.php';
+if (!is_array($covConfig)) {
+    $covConfig = [];
+}
+$covDir  = $covConfig['cov_dir']  ?? (getenv('MISP_COV_DIR') ?: '/cov');
+$appRoot = $covConfig['app_root'] ?? (getenv('MISP_APP_ROOT') ?: '/var/www/MISP/app/');
 
 if (extension_loaded('pcov') && @file_exists($covDir . '/ENABLED')) {
     \pcov\start();
-    register_shutdown_function(function () use ($covDir) {
+    register_shutdown_function(function () use ($covDir, $appRoot) {
         \pcov\stop();
 
         // \pcov\inclusive matches exact file paths, not directories, so
         // collect everything and filter here.
         $data = \pcov\collect(\pcov\all);
-        $appRoot = getenv('MISP_APP_ROOT') ?: '/var/www/MISP/app/';
 
         $hit = [];
         foreach ($data as $file => $lines) {

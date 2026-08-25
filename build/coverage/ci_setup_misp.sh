@@ -63,6 +63,19 @@ for sapi in apache2 cli; do
         echo "auto_prepend_file=${WORKSPACE}/build/coverage/covcollect.php"
     } | sudo tee -a "$ini" > /dev/null
 done
+# Absolute paths for the collector. Written before Apache starts, because
+# mod_php cannot see environment variables exported by a later workflow step.
+COV_DIR="${MISP_COV_DIR:-${WORKSPACE}/cov}"
+mkdir -p "$COV_DIR"
+chmod 777 "$COV_DIR"
+cat > "${WORKSPACE}/build/coverage/covconfig.php" <<COVCFG
+<?php
+return [
+    'cov_dir'  => '${COV_DIR}',
+    'app_root' => '${WORKSPACE}/app/',
+];
+COVCFG
+
 sudo systemctl restart apache2 || sudo systemctl start apache2
 
 # --- GPG -------------------------------------------------------------------

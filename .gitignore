@@ -142,3 +142,4 @@ vagrant/*.log
 !/app/View/Emails/text/Custom/empty
 
 .vscode/launch.json
+covconfig.php

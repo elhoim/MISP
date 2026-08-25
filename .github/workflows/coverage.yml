@@ -103,9 +103,17 @@ jobs:
         run: |
           python3 build/coverage/merge_coverage.py "$MISP_COV_DIR" merged.json \
             "${{ github.workspace }}/app/"
+          # NOT piped into tee: a pipeline returns tee's status, which would
+          # swallow report.py's non-zero exit and make the ratchet inert.
+          # Steps run under `bash -e`, so the failure must be caught with || -
+          # and NOT piped into tee, whose exit status would mask report.py's
+          # and leave the ratchet inert.
+          status=0
           python3 build/coverage/report.py clover.xml merged.json \
             --json coverage-summary.json --min-union "$MIN_UNION" \
-            | tee coverage-report.txt
+            > coverage-report.txt || status=$?
+          cat coverage-report.txt
+          exit "$status"
 
       - name: Summarise on the run page
         if: ${{ always() }}
