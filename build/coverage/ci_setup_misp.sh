@@ -15,12 +15,19 @@ cd "$WORKSPACE"
 sudo chown -R "$USER":www-data "$WORKSPACE"
 sudo chmod -R 775 "$WORKSPACE/app/tmp" "$WORKSPACE/app/files"
 
+# www-data must be able to TRAVERSE down to the workspace. On a GitHub runner
+# /home/runner is not world-executable, so `sudo -u www-data app/Console/cake`
+# fails with "Could not open input file: .../app/Console/cake.php" - the file
+# is there, but www-data cannot walk the path to it. main.yml does the same.
+namei -m "$WORKSPACE" || true
+sudo chmod +x / /home /home/runner /home/runner/work 2>/dev/null || true
+
 # --- config ----------------------------------------------------------------
-cp -n app/Config/bootstrap.default.php app/Config/bootstrap.php
-cp -n app/Config/core.default.php      app/Config/core.php
-cp -n app/Config/config.default.php    app/Config/config.php
-cp -n build/database.php               app/Config/database.php
-cp -n build/email.php                  app/Config/email.php
+cp --update=none app/Config/bootstrap.default.php app/Config/bootstrap.php
+cp --update=none app/Config/core.default.php      app/Config/core.php
+cp --update=none app/Config/config.default.php    app/Config/config.php
+cp --update=none build/database.php               app/Config/database.php
+cp --update=none build/email.php                  app/Config/email.php
 
 # --- database --------------------------------------------------------------
 mysql -h 127.0.0.1 --port 3306 -u root -pbar \
