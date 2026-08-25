@@ -76,7 +76,20 @@ class FrameworkStubs
         $simple = [
             'Component'     => 'class Component { public function __construct($c = null, $s = []) {} public function initialize($c = null) {} }',
             'ComponentCollection' => 'class ComponentCollection {}',
-            'Helper'        => 'class Helper { public function __construct($v = null, $s = []) {} }',
+            'Helper'        => 'class Helper {
+                public $helpers = [];
+                private $__injected = [];
+                public function __construct($v = null, $s = []) {}
+                // CakePHP injects the helpers named in $helpers as properties.
+                // A permissive stand-in lets a helper that composes others run.
+                public function __get($name) {
+                    if (!isset($this->__injected[$name])) {
+                        $this->__injected[$name] = new \\MispTest\\Support\\FakeModel();
+                    }
+                    return $this->__injected[$name];
+                }
+                public function __isset($name) { return true; }
+            }',
             'Model'         => 'class Model { public $name; public $id; public $data = []; public $validationErrors = []; public $useTable; public $alias; public function __construct($i = false, $t = null, $d = null) {} }',
             'Shell'         => 'class Shell { public function __construct($o = null, $c = null) {} }',
             'Controller'    => 'class Controller {}',

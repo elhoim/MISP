@@ -15,8 +15,10 @@ on:
 
 env:
   PHP_VERSION: '8.3'
-  # Floor measured on ff132f4d: union 19.67%. Raise this as tranches land.
-  MIN_UNION: '19.5'
+  # Floor. Raise this as each tranche lands, so coverage cannot decay.
+  #   19.67%  P0 baseline (ff132f4d)
+  #   23.36%  P1: widget + workflow-module + export contracts, pure tools
+  MIN_UNION: '23.0'
 
 jobs:
   coverage:
