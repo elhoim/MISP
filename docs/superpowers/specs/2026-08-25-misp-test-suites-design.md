@@ -11,12 +11,19 @@
 
 Every number here was measured this session, not estimated. Two harnesses, one commit.
 
-| Suite | Covered / 122,618 stmt lines | % | Files touched |
+| Suite | Covered / 117,925 stmt lines | % | Files touched |
 |---|---:|---:|---:|
-| PHPUnit unit suite (19 files, 477 tests) | 2,093 | **1.71 %** | 21 / 590 |
-| Live suite (~300 tests) | 21,802 | **17.78 %** | 223 / 590 |
-| **Union** | 23,230 | **18.95 %** | 231 / 590 |
+| PHPUnit unit suite (19 files, 477 tests) | 2,093 | **1.77 %** | 21 / 528 |
+| Live suite (~300 tests) | 21,764 | **18.46 %** | 223 / 528 |
+| **Union** | 23,192 | **19.67 %** | 231 / 528 |
 | Lines in both | 665 | — | |
+
+> **Denominator note.** These are the *filtered* figures produced by the
+> `app/phpunit.xml` shipped in P0, which excludes vendored CakePHP, Composer
+> packages and the DebugKit/CakeResque plugins' own test code. An earlier
+> unfiltered measurement (122,618 statements: unit 1.71 %, live 17.78 %,
+> union 18.95 %) counted 4,693 statements of third-party plugin test code in
+> the denominator. The filtered numbers above are the ones the CI ratchet uses.
 
 Live coverage per subsystem:
 
@@ -37,7 +44,7 @@ Live coverage per subsystem:
 
 Two structural facts drive the whole design:
 
-1. **94 % of candidate files (261/279) load standalone** under a ~40-line framework stub — no DB, no CakePHP bootstrap. Unit-testing MISP is not blocked by framework coupling.
+1. **Every candidate file loads standalone** under the shared framework stubs — no DB, no CakePHP bootstrap. An ad-hoc harness first measured 261/279 (94 %); the productionised `BootstrapLoadabilityTest` shipped in P0 reaches **252/252 (100 %)** once in-repo parent classes are loaded and the stub signatures match the real ones. Unit-testing MISP is not blocked by framework coupling.
 2. **86.7 % of the proposed unit targets are untouched by the live suite.** Overlap by area: Dashboard 0 %, WorkflowModules 0 %, AttachmentObjectBuilder 0 %, graph tools 3.2 %, View/Helper 4.0 %, exports 13–32 %, behaviors 24 %, components 34 %, deepening 40 %.
 
 ### Correction to an earlier assumption
@@ -239,8 +246,8 @@ Environment lessons folded into the CI/dev docs (each cost debugging time this s
 
 | Phase | Contents | Union coverage |
 |---|---|---:|
-| — | today | 18.95 % |
-| **P0** | bootstrap, phpunit.xml, PHPUnit 9.6, coverage CI | 18.95 % (enables everything) |
+| — | today | 19.67 % |
+| **P0** | bootstrap, phpunit.xml, PHPUnit 9.6, coverage CI | 19.67 % (enables everything) |
 | **P1** | U1 + U2 conformance + behaviour (zero-overlap, 10,341 stmts) | ~25 % |
 | **P2** | U3–U5 + `testlive_dashboards` + `testlive_workflows` | ~30 % |
 | **P3** | U6–U9 + `testlive_export_formats` | ~33 % |

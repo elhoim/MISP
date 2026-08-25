@@ -17,7 +17,10 @@
 - Coverage filter MUST exclude: `app/Lib/cakephp`, `app/Vendor`, `app/Plugin/DebugKit`, `app/Plugin/CakeResque`. The last two are vendored third-party *test* code.
 - The existing 477 tests must still pass after every task. That number is the regression gate.
 - Layer boundary (enforced by which testsuite a file lives in): **Unit** = no DB, no Redis, no HTTP, no network. **Integration** = DB/Redis allowed, no HTTP. **Live** = full stack.
-- Baseline to beat, measured on commit `ff132f4d`: unit 1.71 %, live 17.78 %, union 18.95 % of 122,618 statement lines.
+- Baseline to beat, measured on commit `ff132f4d` with the P0 coverage filter applied:
+  unit 1.77 %, live 18.46 %, union 19.67 % of 117,925 statement lines. (An unfiltered
+  measurement gives 122,618 statements / 18.95 % union, because it counts the DebugKit and
+  CakeResque plugins' own test code.)
 - This targets the `elhoim/MISP` fork; upstream-merge compatibility is explicitly NOT a constraint, but keep Task 1 cherry-pickable.
 
 ---
@@ -883,7 +886,7 @@ python3 build/coverage/merge_coverage.py /cov /tmp/merged.json
 python3 build/coverage/report.py clover.xml /tmp/merged.json
 ```
 
-Expected, on commit `ff132f4d` with the full live suite run: `unit 1.71%`, `live 17.78%`, `union 18.95%`, `statements 122618`. Deviations mean the capture set or clover map is incomplete — investigate before proceeding.
+Expected, on commit `ff132f4d` with the full live suite run: `unit 1.77%`, `live 18.46%`, `union 19.67%`, `statements 117925`. Deviations mean the capture set or clover map is incomplete — investigate before proceeding.
 
 - [ ] **Step 7: Commit**
 
