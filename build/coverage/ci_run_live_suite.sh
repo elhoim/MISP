@@ -27,6 +27,7 @@ cp PyMISP/tests/keys.py PyMISP/keys.py
 
 export HOST AUTH
 export PYTHONPATH="${WORKSPACE}/tests"
+export MISP_ROOT="${WORKSPACE}"
 
 status=0
 
@@ -35,7 +36,8 @@ echo "::group::curl_tests_GH.sh"
 echo "::endgroup::"
 
 for suite in testlive_comprehensive_local testlive_security testlive_event_addtag \
-             testlive_event_mass_actions testlive_event_templates testlive_collection_sync; do
+             testlive_event_mass_actions testlive_event_templates testlive_collection_sync \
+             testlive_dashboards testlive_workflows testlive_export_formats testlive_console; do
     echo "::group::${suite}"
     ( cd tests && python "${suite}.py" -v ) || status=1
     echo "::endgroup::"

@@ -21,6 +21,10 @@ cd app && composer install
 # layer 1 with coverage
 ./Vendor/bin/phpunit -c phpunit.xml --testsuite unit --coverage-clover ../clover.xml
 
+# layer 2 - needs a configured instance and database; its own config,
+# because the unit stubs and the real CakePHP classes cannot share a process
+cd app && sudo -u www-data ./Vendor/bin/phpunit -c phpunit-integration.xml
+
 # layer 3 - needs a running, configured MISP instance
 cd tests
 export HOST=127.0.0.1 AUTH=<api key> PYTHONPATH=$PWD
@@ -83,6 +87,19 @@ so check them first:
 - **PyMISP's `fast_mode`** gates `load_default_feeds()` and the galaxy /
   taxonomy / warninglist updates. With it on, `test_feeds` fails with an
   `UnboundLocalError` because the feed it looks for was never loaded.
+
+## Never invoke a shell bare
+
+`cake <Shell>` with no subcommand can run that shell's DEFAULT action.
+**`cake Live` with no argument takes the instance OFFLINE.** Doing that once
+while probing the console set `MISP.live=false` mid-run, and every
+PyMISP-based suite afterwards failed to connect with an error that pointed at
+PyMISP rather than at the cause.
+
+`testlive_console.py` therefore probes each shell with an *invalid*
+subcommand, which forces the option parser to print usage and exit, and
+excludes `Live` and `Password` outright. A bare `cake` with no shell name is
+safe - it only lists the available commands.
 
 ## Test isolation
 

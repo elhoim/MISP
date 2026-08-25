@@ -78,6 +78,14 @@ jobs:
       - name: Install and configure MISP
         run: bash build/coverage/ci_setup_misp.sh
 
+      # The integration suite boots the real CakePHP stack, so it runs after
+      # MISP is configured and uses its own config (the unit stubs and the
+      # real Cake classes cannot share a process).
+      - name: Integration suite
+        run: |
+          cd app
+          sudo -u www-data ./Vendor/bin/phpunit -c phpunit-integration.xml
+
       - name: Live suite under instrumentation
         env:
           MISP_COV_DIR: ${{ github.workspace }}/cov
