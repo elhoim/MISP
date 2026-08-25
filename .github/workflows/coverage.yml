@@ -18,7 +18,8 @@ env:
   # Floor. Raise this as each tranche lands, so coverage cannot decay.
   #   19.67%  P0 baseline (ff132f4d)
   #   23.36%  P1: widget + workflow-module + export contracts, pure tools
-  MIN_UNION: '23.0'
+  #   24.83%  P2: layer-3 live scripts + layer-2 correlation harness
+  MIN_UNION: '24.5'
 
 jobs:
   coverage:

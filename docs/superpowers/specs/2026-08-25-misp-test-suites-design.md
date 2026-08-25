@@ -251,7 +251,9 @@ Environment lessons folded into the CI/dev docs (each cost debugging time this s
 | **P1a** | widget + workflow-module conformance | ~25 % | **22.67 %** |
 | **P1b** | export format contract | — | **23.28 %** |
 | **P1c** | pure Lib/Tools behaviour + NavbarHelper | — | **23.41 %** |
-| P2–P4 | remaining tranches | ~38 % | not yet run |
+| **P2** | layer-3 live scripts (dashboards, workflows, formats, console) | — | **24.83 %** |
+| **P3** | layer-2 harness + correlation engine agreement | — | included above |
+| P4 | remaining tranches | ~38 % | not yet run |
 
 Subsystem movement from P1:
 
@@ -262,6 +264,45 @@ Subsystem movement from P1:
 | `Lib/Export` | 0.00 % | **34.02 %** | 20.58 % |
 | `Lib/Tools` | 13.08 % | **15.36 %** | 22.27 % |
 | `View/Helper` | 0.00 % | 0.28 % | 3.99 % |
+
+Live-side movement from the layer-3 scripts:
+
+| Subsystem | Live before | Live after |
+|---|---:|---:|
+| `Lib/Dashboard` | **0.00 %** | **27.35 %** |
+| `Model/WorkflowModules` | **0.00 %** | **20.52 %** |
+| `Lib/Export` | 20.58 % | 28.24 % |
+| `Lib/Tools` | 22.27 % | 24.01 % |
+| `Controller` | 16.62 % | 17.41 % |
+| `Console/Command` | 1.22 % | 1.62 % |
+
+Overall: unit 5.72 %, live 21.56 %, **union 24.83 %**, 430 of 528 files touched
+(264 at baseline).
+
+### What layers 2 and 3 taught
+
+**The console is dangerous to probe.** `cake <Shell>` with no subcommand can
+run that shell's *default action*, and `cake Live` with no argument takes the
+instance **offline**. Probing shells bare set `MISP.live=false` mid-run and
+every PyMISP suite afterwards failed to connect, with an error that pointed at
+PyMISP rather than at the cause — the same shape of failure the isolation
+contract exists to prevent, reintroduced by the very script meant to exercise
+the console. Shells are now probed with an *invalid subcommand*, which forces
+the option parser to print usage and cannot trigger a default action.
+
+**Console coverage barely moved** (1.22 % → 1.62 %). Usage probes exercise
+argument parsing only; the 12,572 statements are in the subcommands
+themselves, which need a disposable instance to run against. That tranche
+needs its own design, not more probes.
+
+**Layer 2 paid for itself on its first run.** The engine-parity test
+immediately found that `NoAclCorrelationBehavior::runGetAttributesRelatedToEvent`
+takes one parameter fewer than the Default engine, so the `$sgids` that
+`Correlation.php:1115` passes are silently discarded. For an engine that
+deliberately skips ACL that is defensible — which is why the invariant became
+"no engine may *require* more than the caller passes" (narrowing is safe,
+widening breaks the call site) rather than "identical arity". A second test
+pins the current divergence set so a *new* one cannot hide among accepted ones.
 
 ### What P1 actually taught
 
