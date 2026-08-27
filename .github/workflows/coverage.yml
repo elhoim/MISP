@@ -128,6 +128,36 @@ jobs:
           mkdir -p "$MISP_COV_DIR" && chmod 777 "$MISP_COV_DIR"
           touch "$MISP_COV_DIR/ENABLED"
 
+      # Runs BEFORE the integration suite, and that order is load-bearing.
+      # tests/curl_tests_GH.sh hardcodes event id 1: it POSTs event.json and
+      # then diffs GET /events/csv/download/1 against tests/event.csv. The
+      # integration suite writes to the events table, and InnoDB does not roll
+      # AUTO_INCREMENT back when those rows are deleted in tearDown, so run
+      # afterwards the script's event is no longer id 1, the diff fails, and -
+      # under `set -e` - it aborts before its own cleanup
+      # `POST /events/delete/1`. The 38 attributes it leaves behind then break
+      # test_attribute, test_statistics and their neighbours for the rest of the
+      # run. .github/workflows/main.yml has no integration suite and so never
+      # hits this; running the script here restores the same fresh-table
+      # precondition it enjoys there.
+      #
+      # It sits after "Enable coverage instrumentation" so its requests are
+      # still counted, and is deliberately not made fatal to the job: the
+      # ratchet is the gate, and a suite failure should be visible in the log
+      # rather than mask the coverage number.
+      - name: Curl smoke tests
+        env:
+          MISP_COV_DIR: ${{ github.workspace }}/cov
+        run: |
+          # AUTH is read from key.txt rather than the environment, and HOST is
+          # spelled out here, because ci_setup_misp.sh only exports AUTH to
+          # $GITHUB_ENV and defaults HOST internally - neither is guaranteed to
+          # be set for a step that does not source the script.
+          AUTH="$(cat "${{ github.workspace }}/key.txt")"
+          HOST=127.0.0.1
+          cd tests
+          bash ./curl_tests_GH.sh "$AUTH" "$HOST" || echo "curl_tests_GH.sh failed"
+
       - name: Integration suite
         run: |
           cd app
