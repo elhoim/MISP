@@ -49,12 +49,15 @@ KNOWN_DEFECTS = {
 }
 
 # Defects that apply only to the event scope.
+#
+# CacheExport had the identical bug and was fixed upstream in e06cb68844; it is
+# deliberately NOT listed here. An annotation naming a fixed defect is worse
+# than none, because it teaches the reader to distrust the others.
 KNOWN_DEFECTS_EVENT_SCOPE = {
-    "cache": "CacheExport.php:27 binds $attribute in the loop but then indexes "
-             "$data['Attribute']['value'] - the LIST - so every iteration raises "
-             "'Undefined array key value'. Event-scope output is wrong.",
-    "netfilter": "NetfilterExport.php:39 has the same bug: it reads "
-                 "$data['Attribute']['type'] instead of $attribute['type'].",
+    "netfilter": "NetfilterExport.php:39 binds $attribute in the loop but then "
+                 "reads $data['Attribute']['type'] - the LIST - so every iteration "
+                 "raises 'Undefined array key type' and no rules are emitted. "
+                 "Fix proposed upstream: MISP/MISP#10965.",
 }
 
 
