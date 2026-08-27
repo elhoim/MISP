@@ -74,8 +74,25 @@ jobs:
           sudo apt-get -y install curl zip unzip gnupg python3 python3-pip \
                                   python3-virtualenv apache2 libapache2-mod-php${{ env.PHP_VERSION }}
 
+      # app/composer.lock is gitignored upstream, so `composer install` here is
+      # really `composer update`: it re-resolves from the network every run,
+      # and the same commit can go from green to red because a dependency
+      # published. A coverage RATCHET measured against a moving dependency set
+      # is measuring the weather. build/composer-ci.lock pins it.
+      #
+      # The lock lives here rather than at app/composer.lock on purpose: it was
+      # resolved under PHP 8.3 and symfony/console, symfony/filesystem,
+      # symfony/string and nette/utils in it require PHP >= 8.2, so dropping it
+      # into app/ would make the `build (ubuntu-22.04, 8.1)` job in main.yml
+      # unresolvable. Pinning is therefore scoped to this job, which is the one
+      # with a gate to protect. `composer validate` fails loudly (exit 2) if a
+      # change to app/composer.json leaves the lock stale.
       - name: Install PHP dependencies
-        run: cd app && composer install --no-progress --no-interaction
+        run: |
+          cp build/composer-ci.lock app/composer.lock
+          cd app
+          composer validate --no-check-all --no-check-publish
+          composer install --no-progress --no-interaction
 
       # -- unit suite ------------------------------------------------------
       - name: Unit suite with coverage
