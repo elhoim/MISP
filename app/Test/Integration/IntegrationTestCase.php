@@ -28,6 +28,12 @@ abstract class IntegrationTestCase extends TestCase
 
     protected function setUp(): void
     {
+        // AnalystDataParentBehavior resolves the acting user from
+        // Configure::read('CurrentUserId') and fatals if it is unset (see
+        // EventFetchCharacterizationTest::testAnalystDataWithoutCurrentUserId).
+        // A web request sets it; a test, a shell and a worker do not. Set it
+        // so tests exercise the normal authenticated path.
+        Configure::write('CurrentUserId', 1);
         try {
             $this->model('Event')->find('count');
         } catch (\Throwable $e) {
