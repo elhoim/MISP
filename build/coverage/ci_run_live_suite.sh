@@ -36,9 +36,16 @@ export MISP_ROOT="${WORKSPACE}"
 
 status=0
 
-echo "::group::curl_tests_GH.sh"
-( cd tests && bash ./curl_tests_GH.sh "$AUTH" "$HOST" ) || status=1
-echo "::endgroup::"
+# tests/curl_tests_GH.sh is NOT run from here. It hardcodes event id 1 (it
+# POSTs event.json and then GETs /events/csv/download/1), so it is only correct
+# against a database whose events table has never been written to. By this
+# point the PHP integration suite has already run, and although it deletes the
+# events it creates, InnoDB does not roll AUTO_INCREMENT back - so the event it
+# POSTs is not id 1, the CSV diff fails, and because the script runs under
+# `set -e` it aborts BEFORE its cleanup `POST /events/delete/1`. Its 38
+# attributes then survive into the whole Python suite. .github/workflows/main.yml
+# has no PHP integration suite, which is why the same script is green there.
+# coverage.yml therefore runs it as its own step, before the integration suite.
 
 # PyMISP's suite runs FIRST, exactly as main.yml orders it, and the order is
 # load-bearing: its setUpClass and tests/testlive_comprehensive_local.py's both

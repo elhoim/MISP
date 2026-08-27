@@ -90,15 +90,36 @@ cake() { sudo -u www-data app/Console/cake "$@"; }
 cake Admin setSetting "MISP.osuser" "www-data"
 cake Admin runUpdates
 
+# The Plugin.ZeroMQ_* block mirrors .github/workflows/main.yml (which sets the
+# same six settings before its live suite). Without them PyMISP's test_zmq
+# fails here and passes there: it calls push_event_to_ZMQ and asserts the reply
+# is "Event published to ZMQ", which MISP only answers when
+# Plugin.ZeroMQ_enable is on. Plugin.ZeroMQ_redis_password is set separately
+# below, because an empty value cannot be passed through this loop unquoted.
+#
+# MISP.background_jobs is turned OFF (it defaults to true in
+# app/Config/config.default.php). This job runs no workers, so with it on
+# Event::publishRouter enqueues to a queue nothing drains and events never
+# reach published=1 - which is precisely why search_csv, search_text and
+# search_publish_timestamp failed here and pass in main.yml, where
+# SimpleBackgroundJobs is enabled and a "Start workers" step runs supervisor.
+# With it off, publishRouter falls through to Event::publish(), which sets
+# published=1 and publish_timestamp inline.
 for kv in "Session.autoRegenerate 0" "Session.timeout 600" "Session.cookieTimeout 3600" \
           "MISP.email info@admin.test" "MISP.baseurl http://${HOST}" \
           "MISP.redis_host 127.0.0.1" "MISP.redis_port 6379" "MISP.redis_database 13" \
           "GnuPG.email info@admin.test" "GnuPG.homedir ${WORKSPACE}/.gnupg" \
           "GnuPG.password travistest" "MISP.download_gpg_from_homedir 1" \
-          "SimpleBackgroundJobs.enabled 0" "MISP.server_settings_skip_backup_rotate 1"; do
+          "Plugin.ZeroMQ_redis_host 127.0.0.1" "Plugin.ZeroMQ_redis_port 6379" \
+          "Plugin.ZeroMQ_redis_database 1" "Plugin.ZeroMQ_enable 1" \
+          "Plugin.ZeroMQ_audit_notifications_enable 1" \
+          "SimpleBackgroundJobs.enabled 0" "MISP.background_jobs 0" \
+          "MISP.server_settings_skip_backup_rotate 1"; do
     # shellcheck disable=SC2086
     cake Admin setSetting $kv
 done
+# Empty string: the loop above word-splits $kv, so "" would vanish.
+cake Admin setSetting "Plugin.ZeroMQ_redis_password" ""
 cake Admin setSetting --force debug true
 cake Admin setSetting --force "Security.allow_self_registration" true
 
