@@ -162,8 +162,9 @@ class Snapshot
     /**
      * Compare against the committed snapshot.
      *
-     * Returns [matched, message]. A first run records rather than fails, so
-     * adding a case does not need a separate blessing step.
+     * Returns [matched, message]. A missing snapshot fails: recording is only
+     * ever done under UPDATE_SNAPSHOTS=1, so every golden file arrives through
+     * a reviewable diff rather than through the run that checks it.
      */
     public static function compare(string $name, $actual, ?string $knownDefect = null): array
     {
@@ -177,7 +178,22 @@ class Snapshot
         $content = $header . $body;
         $path = self::path($name);
 
-        if (self::updating() || !is_file($path)) {
+        // An uncommitted snapshot must FAIL, not record itself. Recording on
+        // first sight looks convenient, but a golden file that is written by
+        // the run it is meant to police compares nothing: the test passes on
+        // CI, the file never reaches the repository, and it passes there
+        // forever. Every snapshot has to be produced deliberately and land in
+        // a reviewable diff, which is the entire safety mechanism.
+        if (!self::updating() && !is_file($path)) {
+            return [false, sprintf(
+                "no committed snapshot %s.\nRe-run with UPDATE_SNAPSHOTS=1 to record it, then "
+                . "commit the file so the contract it pins is reviewed. A snapshot recorded by "
+                . "the run that checks it would assert nothing.",
+                basename($path)
+            )];
+        }
+
+        if (self::updating()) {
             $dir = dirname($path);
             if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
                 throw new \RuntimeException("cannot create snapshot directory $dir");
