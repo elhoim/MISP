@@ -17,7 +17,7 @@ use PHPUnit\Framework\TestCase;
 abstract class IntegrationTestCase extends TestCase
 {
     /** @var array<int,int> event ids created by the running test */
-    private $createdEventIds = [];
+    protected $createdEventIds = [];
 
     public static function setUpBeforeClass(): void
     {
@@ -51,6 +51,16 @@ abstract class IntegrationTestCase extends TestCase
             }
         }
         $this->createdEventIds = [];
+    }
+
+    /**
+     * Register an event created outside createEvent() - e.g. by _add() under
+     * test - so tearDown still removes it.
+     */
+    protected function trackEvent(int $eventId): int
+    {
+        $this->createdEventIds[] = $eventId;
+        return $eventId;
     }
 
     protected function model(string $name)
