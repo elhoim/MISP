@@ -29,9 +29,13 @@ env:
   #   23791  P0 baseline (ff132f4d), 20.18% of the tree at the time
   #   23826  after merging upstream 2.5 (19.82% of a bigger tree)
   #   24152  integration suite instrumented and counted
-  # The floor keeps roughly 1% of headroom, because the live suite's
-  # contribution moves by a few lines between runs.
-  MIN_UNION_LINES: '23900'
+  #   30081  PyMISP's live suite un-broken: its 85 tests were erroring in
+  #          setUpClass and contributing nothing (25.02% of the tree, which
+  #          is now ahead of the 24.83% that a developer machine measured)
+  # The floor keeps roughly 1.5% of headroom, because the live suite's
+  # contribution moves between runs - nine of PyMISP's tests fail rather than
+  # error, and which ones can vary.
+  MIN_UNION_LINES: '29600'
 
 jobs:
   coverage:
