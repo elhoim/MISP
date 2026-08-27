@@ -143,3 +143,5 @@ vagrant/*.log
 
 .vscode/launch.json
 covconfig.php
+
+/tests/ldapauth/__pycache__
