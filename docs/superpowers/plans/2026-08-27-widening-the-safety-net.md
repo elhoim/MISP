@@ -44,8 +44,8 @@ Public-method reach on the god-models:
 **W0 — honest denominator.** Exclude permanently-dark code from the whitelist in its
 own commit: `AppModel::updateDatabase` (1,435 stmts of append-only migration ladder,
 each arm run once per instance lifetime), `updateMISP`, `runUpdates`,
-`SearchPerformanceShell`, `TrainingShell`, `DevShell`, `BenchmarkTool` — about 3,900
-statements, 3.4 % of the tree. The gate counts lines, so this cannot move it; only
+`SearchPerformanceShell`, `TrainingShell`, `DevShell`, `BenchmarkTool`, `Ls22Shell` —
+about 4,500 statements, 3.9 % of the tree. The gate counts lines, so this cannot move it; only
 the reported percentage changes, which is precisely why the commit must stand alone
 and say so.
 
@@ -100,12 +100,20 @@ already shown what shared-state mistakes cost.
 
 Reachable, but testing them is ratchet inflation or actively unsafe:
 the migration ladder (W0); `SearchPerformanceShell` (a benchmark harness);
-`TrainingShell` (destructive provisioning); `LiveShell` (**`cake Live` with no
+`TrainingShell` (destructive provisioning); `Ls22Shell` (operator-driven remote
+orchestration, see below); `LiveShell` (**`cake Live` with no
 subcommand takes the instance offline** — never invoke); `TestLdapAuth.php`, which is
 itself a shipped test double.
 
-`Ls22Shell` (635 stmts) is proposed for removal upstream rather than tested — as a
-proposal inviting refusal, not an assertion, since we cannot see MISP's internal use.
+`Ls22Shell` (635 stmts) was investigated as a deletion candidate and **cleared**. Its
+name is only the year it was first written: `git log --follow` shows it updated for a
+fresh exercise in 2022, 2023, 2024 and 2025, most recently `817a5bdb57`
+"chg: [console:ls-shell] Updated for LS25" (2025-05-12). It is a fleet-orchestration
+shell that drives *other* MISP instances over their REST APIs from an operator-supplied
+`instances.csv`, so it has no in-tree callers by design and can never be unit-tested as
+written. Zero coverage was not evidence of death — for a CakePHP shell invoked as
+`cake Ls22 <task>` from an operator's shell, the absence of call sites is expected and
+meaningless. It joins the W0 exclusion list instead.
 
 ## Blocked on infrastructure
 
