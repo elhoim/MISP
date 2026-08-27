@@ -10,6 +10,14 @@ namespace MispTest\Support;
  *
  *  - Volatile values are ALIASED, not erased, so relationships survive: if two
  *    attributes share an event_id, the snapshot still shows that they do.
+ *  - Identities are aliased PER TABLE, never by bare number. Auto-increment
+ *    counters run independently per table, so on one database the first event
+ *    and the first attribute both have id 1 and on another they do not. Keying
+ *    the alias on the number alone lets that coincidence merge two unrelated
+ *    tokens and renumber every later one - a snapshot recorded on a used
+ *    instance then cannot match a clean CI database, for no reason a refactor
+ *    caused. A foreign key is resolved to the table it points AT, so
+ *    Attribute.event_id and Event.id still share one token.
  *  - Tokens are numbered PER KIND. A single counter across kinds couples id
  *    numbering to how many distinct timestamps appeared, so an unrelated
  *    run-to-run variation rewrites the whole file.
@@ -38,6 +46,35 @@ class Snapshot
         'current_login', 'last_login',
     ];
 
+    /**
+     * The table a foreign key points at, so that Attribute.event_id and
+     * Event.id alias to one token while Attribute.id keeps its own.
+     */
+    private const FOREIGN_KEY_TABLE = [
+        'event_id' => 'Event',
+        'org_id' => 'Org',
+        'orgc_id' => 'Org',
+        'attribute_id' => 'Attribute',
+        'object_id' => 'Object',
+        'sharing_group_id' => 'SharingGroup',
+        'user_id' => 'User',
+        'role_id' => 'Role',
+        'sighting_id' => 'Sighting',
+        'tag_id' => 'Tag',
+        'galaxy_id' => 'Galaxy',
+        'cluster_id' => 'GalaxyCluster',
+        'server_id' => 'Server',
+        'collection_id' => 'Collection',
+    ];
+
+    /**
+     * CakePHP model keys that name the same table under two spellings.
+     */
+    private const TABLE_ALIASES = [
+        'Orgc' => 'Org',
+        'RelatedEvent' => 'Event',
+    ];
+
     /** @var array<string,string> */
     private $seen = [];
     /** @var array<string,int> */
@@ -46,15 +83,16 @@ class Snapshot
     public static function of($value): string
     {
         $self = new self();
-        return $self->render($self->walk($value, null));
+        return $self->render($self->walk($value, null, null));
     }
 
-    private function token(string $kind, $value): string
+    private function token(string $kind, $value, string $scope = ''): string
     {
         if ($kind === 'time') {
             return '<time>';
         }
-        $key = $kind . '|' . (is_scalar($value) ? (string)$value : gettype($value));
+        $key = $kind . '|' . $scope . '|'
+            . (is_scalar($value) ? (string)$value : gettype($value));
         if (!isset($this->seen[$key])) {
             $this->counts[$kind] = ($this->counts[$kind] ?? 0) + 1;
             $this->seen[$key] = sprintf('<%s:%d>', $kind, $this->counts[$kind]);
@@ -62,7 +100,19 @@ class Snapshot
         return $this->seen[$key];
     }
 
-    private function walk($node, ?string $parentKey)
+    /**
+     * Which table an identity belongs to: the one a foreign key names, or
+     * else the model key the value is nested under.
+     */
+    private function scopeOf(string $parentKey, ?string $table): string
+    {
+        if (isset(self::FOREIGN_KEY_TABLE[$parentKey])) {
+            return self::FOREIGN_KEY_TABLE[$parentKey];
+        }
+        return $table ?? '';
+    }
+
+    private function walk($node, ?string $parentKey, ?string $table)
     {
         if (is_array($node)) {
             $isList = array_keys($node) === range(0, count($node) - 1);
@@ -71,7 +121,11 @@ class Snapshot
                 ksort($node);
             }
             foreach ($node as $k => $v) {
-                $out[$k] = $this->walk($v, is_string($k) ? $k : $parentKey);
+                $childTable = $table;
+                if (is_string($k) && $k !== '' && ctype_upper($k[0])) {
+                    $childTable = self::TABLE_ALIASES[$k] ?? $k;
+                }
+                $out[$k] = $this->walk($v, is_string($k) ? $k : $parentKey, $childTable);
             }
             return $out;
         }
@@ -84,7 +138,7 @@ class Snapshot
         }
         if ($parentKey !== null && in_array($parentKey, self::ID_KEYS, true)
             && $node !== null && $node !== '' && $node !== 0 && $node !== '0') {
-            return $this->token('id', $node);
+            return $this->token('id', $node, $this->scopeOf($parentKey, $table));
         }
         return $node;
     }

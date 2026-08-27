@@ -37,7 +37,43 @@ class EventFetchCharacterizationTest extends IntegrationTestCase
     private function fetch(array $options): array
     {
         $options['eventid'] = $this->eventId;
-        return $this->model('Event')->fetchEvent($this->adminUser(), $options);
+        return $this->localise(
+            $this->model('Event')->fetchEvent($this->adminUser(), $options)
+        );
+    }
+
+    /**
+     * Drop related events this test did not create.
+     *
+     * RelatedEvent is the one part of the result that is a property of the
+     * DATABASE rather than of fetchEvent(): it lists every other event holding
+     * a matching attribute value. A clean CI runner has none, a developer's
+     * instance has whatever it happens to hold - including events orphaned by
+     * an earlier interrupted run of this very suite. Recording that in a
+     * golden file makes the snapshot a fact about the recorder's machine, and
+     * the suite then fails on CI for reasons no refactor caused.
+     *
+     * Filtering to the ids this test created keeps the key, its position and
+     * the entry shape under the snapshot while removing the part no test can
+     * control. Correlation itself is pinned where it belongs, by
+     * CorrelationEngineTest, which builds both sides of the relationship.
+     */
+    private function localise(array $events): array
+    {
+        foreach ($events as $index => $event) {
+            if (!isset($event['RelatedEvent']) || !is_array($event['RelatedEvent'])) {
+                continue;
+            }
+            $mine = [];
+            foreach ($event['RelatedEvent'] as $related) {
+                $id = (int)($related['Event']['id'] ?? 0);
+                if (in_array($id, $this->createdEventIds, true)) {
+                    $mine[] = $related;
+                }
+            }
+            $events[$index]['RelatedEvent'] = $mine;
+        }
+        return $events;
     }
 
     private function pin(string $name, array $result): void

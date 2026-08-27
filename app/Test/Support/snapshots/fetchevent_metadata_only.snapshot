@@ -22,8 +22,8 @@
             "sharing_group_id": 0,
             "threat_level_id": 1,
             "timestamp": "<time>",
-            "user_id": "<id:2>",
-            "uuid": "<id:3>"
+            "user_id": "<id:3>",
+            "uuid": "<id:4>"
         },
         "EventTag": [],
         "Galaxy": [],
@@ -31,68 +31,17 @@
             "id": "<id:2>",
             "local": true,
             "name": "ORGNAME",
-            "uuid": "<id:4>"
+            "uuid": "<id:5>"
         },
         "Orgc": {
             "id": "<id:2>",
             "local": true,
             "name": "ORGNAME",
-            "uuid": "<id:4>"
+            "uuid": "<id:5>"
         },
-        "RelatedEvent": [
-            {
-                "Event": {
-                    "Org": {
-                        "id": "<id:2>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:4>"
-                    },
-                    "Orgc": {
-                        "id": "<id:2>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:4>"
-                    },
-                    "analysis": 0,
-                    "date": "<time>",
-                    "distribution": 3,
-                    "id": "<id:5>",
-                    "info": "fetchEvent characterization",
-                    "org_id": "<id:2>",
-                    "orgc_id": "<id:2>",
-                    "published": false,
-                    "threat_level_id": 1,
-                    "timestamp": "<time>",
-                    "uuid": "<id:6>"
-                }
-            },
-            {
-                "Event": {
-                    "Org": {
-                        "id": "<id:2>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:4>"
-                    },
-                    "Orgc": {
-                        "id": "<id:2>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:4>"
-                    },
-                    "analysis": 0,
-                    "date": "<time>",
-                    "distribution": 3,
-                    "id": "<id:7>",
-                    "info": "fetchEvent characterization",
-                    "org_id": "<id:2>",
-                    "orgc_id": "<id:2>",
-                    "published": false,
-                    "threat_level_id": 1,
-                    "timestamp": "<time>",
-                    "uuid": "<id:8>"
-                }
-            }
-        ],
+        "RelatedEvent": [],
         "ThreatLevel": {
-            "id": "<id:2>",
+            "id": "<id:6>",
             "name": "High"
         },
         "User": {

@@ -90,8 +90,8 @@
             "sharing_group_id": 0,
             "threat_level_id": 1,
             "timestamp": "<time>",
-            "user_id": "<id:8>",
-            "uuid": "<id:9>"
+            "user_id": "<id:9>",
+            "uuid": "<id:10>"
         },
         "EventReport": [],
         "EventTag": [],
@@ -100,70 +100,19 @@
             "id": "<id:8>",
             "local": true,
             "name": "ORGNAME",
-            "uuid": "<id:10>"
+            "uuid": "<id:11>"
         },
         "Orgc": {
             "id": "<id:8>",
             "local": true,
             "name": "ORGNAME",
-            "uuid": "<id:10>"
+            "uuid": "<id:11>"
         },
-        "RelatedEvent": [
-            {
-                "Event": {
-                    "Org": {
-                        "id": "<id:8>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:10>"
-                    },
-                    "Orgc": {
-                        "id": "<id:8>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:10>"
-                    },
-                    "analysis": 0,
-                    "date": "<time>",
-                    "distribution": 3,
-                    "id": "<id:11>",
-                    "info": "fetchEvent characterization",
-                    "org_id": "<id:8>",
-                    "orgc_id": "<id:8>",
-                    "published": false,
-                    "threat_level_id": 1,
-                    "timestamp": "<time>",
-                    "uuid": "<id:12>"
-                }
-            },
-            {
-                "Event": {
-                    "Org": {
-                        "id": "<id:8>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:10>"
-                    },
-                    "Orgc": {
-                        "id": "<id:8>",
-                        "name": "ORGNAME",
-                        "uuid": "<id:10>"
-                    },
-                    "analysis": 0,
-                    "date": "<time>",
-                    "distribution": 3,
-                    "id": "<id:13>",
-                    "info": "fetchEvent characterization",
-                    "org_id": "<id:8>",
-                    "orgc_id": "<id:8>",
-                    "published": false,
-                    "threat_level_id": 1,
-                    "timestamp": "<time>",
-                    "uuid": "<id:14>"
-                }
-            }
-        ],
+        "RelatedEvent": [],
         "ShadowAttribute": [],
         "Sighting": [],
         "ThreatLevel": {
-            "id": "<id:8>",
+            "id": "<id:12>",
             "name": "High"
         },
         "User": {
