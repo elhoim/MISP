@@ -23,6 +23,11 @@ env:
   #           complete on a clean runner, so CI sees less. The floor tracks
   #           what CI can actually reproduce; a floor CI cannot reach is a
   #           permanently red gate, not a standard.
+  #   19.82%  after merging upstream 2.5: DILUTION, not decay. Covered lines
+  #           rose (23791 -> 23826) while the denominator grew by 2324
+  #           statements of new upstream code. The answer to dilution is more
+  #           coverage, not a lower floor - so the integration suite, which
+  #           ran uninstrumented and counted for nothing, is now measured too.
   MIN_UNION: '20.0'
 
 jobs:
@@ -86,6 +91,19 @@ jobs:
       # The integration suite boots the real CakePHP stack, so it runs after
       # MISP is configured and uses its own config (the unit stubs and the
       # real Cake classes cannot share a process).
+      # covcollect.php is hooked into BOTH SAPIs by ci_setup_misp.sh, but it
+      # only records once ENABLED exists - which is how instance setup is kept
+      # out of the numbers. Creating it here rather than just before the live
+      # suite is what makes the integration suite count: it is a CLI process
+      # under the same auto_prepend_file, so its coverage lands in the same
+      # capture directory. Before this, layer 2 ran but contributed nothing.
+      - name: Enable coverage instrumentation
+        env:
+          MISP_COV_DIR: ${{ github.workspace }}/cov
+        run: |
+          mkdir -p "$MISP_COV_DIR" && chmod 777 "$MISP_COV_DIR"
+          touch "$MISP_COV_DIR/ENABLED"
+
       - name: Integration suite
         run: |
           cd app
@@ -95,10 +113,7 @@ jobs:
         env:
           MISP_COV_DIR: ${{ github.workspace }}/cov
           MISP_APP_ROOT: ${{ github.workspace }}/app/
-        run: |
-          mkdir -p "$MISP_COV_DIR" && chmod 777 "$MISP_COV_DIR"
-          touch "$MISP_COV_DIR/ENABLED"
-          bash build/coverage/ci_run_live_suite.sh
+        run: bash build/coverage/ci_run_live_suite.sh
 
       # -- report ----------------------------------------------------------
       - name: Merge and report
