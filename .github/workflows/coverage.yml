@@ -15,20 +15,23 @@ on:
 
 env:
   PHP_VERSION: '8.3'
-  # Floor. Raise this as each tranche lands, so coverage cannot decay.
-  #   19.67%  P0 baseline (ff132f4d)
-  #   23.36%  P1: widget + workflow-module + export contracts, pure tools
-  #   24.83%  measured locally with a full PyMISP contribution
-  #   20.18%  measured HERE, in this job - PyMISP's live suite does not
-  #           complete on a clean runner, so CI sees less. The floor tracks
-  #           what CI can actually reproduce; a floor CI cannot reach is a
-  #           permanently red gate, not a standard.
-  #   19.82%  after merging upstream 2.5: DILUTION, not decay. Covered lines
-  #           rose (23791 -> 23826) while the denominator grew by 2324
-  #           statements of new upstream code. The answer to dilution is more
-  #           coverage, not a lower floor - so the integration suite, which
-  #           ran uninstrumented and counted for nothing, is now measured too.
-  MIN_UNION: '20.0'
+  # The ratchet is on covered LINES, not on a percentage.
+  #
+  # A percentage floor was tried first and failed on its own terms: merging
+  # upstream 2.5 added 2324 statements of new code, and the gate went red
+  # (20.18% -> 19.82%) on a merge that broke nothing, while the number of
+  # covered lines went UP by 35. The denominator is not something this project
+  # controls, so a gate hung off it eventually demands that someone lower the
+  # gate - and a ratchet that gets lowered is decoration. Covered lines fall
+  # only when the tests stop executing code, which is the thing worth gating.
+  #
+  # Raise this as each tranche lands. The percentage is still reported.
+  #   23791  P0 baseline (ff132f4d), 20.18% of the tree at the time
+  #   23826  after merging upstream 2.5 (19.82% of a bigger tree)
+  #   24152  integration suite instrumented and counted
+  # The floor keeps roughly 1% of headroom, because the live suite's
+  # contribution moves by a few lines between runs.
+  MIN_UNION_LINES: '23900'
 
 jobs:
   coverage:
@@ -146,7 +149,7 @@ jobs:
           # and leave the ratchet inert.
           status=0
           python3 build/coverage/report.py clover.xml merged.json \
-            --json coverage-summary.json --min-union "$MIN_UNION" \
+            --json coverage-summary.json --min-union-lines "$MIN_UNION_LINES" \
             > coverage-report.txt || status=$?
           cat coverage-report.txt
           exit "$status"

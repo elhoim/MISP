@@ -38,6 +38,9 @@ def main() -> int:
     ap.add_argument("--json", dest="json_out", help="write the summary here")
     ap.add_argument("--min-union", type=float, default=None,
                     help="exit non-zero if union coverage is below this percentage")
+    ap.add_argument("--min-union-lines", type=int, default=None,
+                    help="exit non-zero if fewer than this many distinct statements "
+                         "are covered by the two suites together")
     args = ap.parse_args()
 
     stmt, unit = load_clover(args.clover)
@@ -79,16 +82,27 @@ def main() -> int:
         "unit_pct": pct(n_unit),
         "live_pct": pct(n_live),
         "union_pct": pct(n_union),
+        "union_lines": n_union,
         "both_lines": n_both,
     }
     if args.json_out:
         with open(args.json_out, "w") as handle:
             json.dump(summary, handle, indent=2)
 
+    failed = False
+    # The ratchet is on LINES, not on the percentage. The percentage has a
+    # denominator that this project does not control: merging upstream 2.5
+    # added 2324 statements and took union coverage from 20.18% to 19.82%
+    # while the number of covered lines went UP by 35. A gate a merge can trip
+    # teaches people to lower the gate, which is how a ratchet dies. Covered
+    # lines only fall when the tests actually stop executing code.
+    if args.min_union_lines is not None and n_union < args.min_union_lines:
+        print(f"\nFAIL: union {n_union} lines < required {args.min_union_lines}")
+        failed = True
     if args.min_union is not None and summary["union_pct"] < args.min_union:
         print(f"\nFAIL: union {summary['union_pct']}% < required {args.min_union}%")
-        return 1
-    return 0
+        failed = True
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
