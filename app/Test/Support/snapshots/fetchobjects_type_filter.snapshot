@@ -1,0 +1,79 @@
+[
+    {
+        "Attribute": [
+            {
+                "AttributeTag": [],
+                "category": "Payload delivery",
+                "comment": "",
+                "deleted": false,
+                "disable_correlation": false,
+                "distribution": 5,
+                "event_id": "<id:1>",
+                "first_seen": null,
+                "id": "<id:2>",
+                "last_seen": null,
+                "object_id": "<id:3>",
+                "object_relation": "hash",
+                "sharing_group_id": 0,
+                "timestamp": "<time>",
+                "to_ids": true,
+                "type": "md5",
+                "uuid": "<id:4>",
+                "value": "d41d8cd98f00b204e9800998ecf8427e",
+                "value1": "d41d8cd98f00b204e9800998ecf8427e",
+                "value2": ""
+            }
+        ],
+        "Event": {
+            "distribution": 3,
+            "id": "<id:1>",
+            "org_id": "<id:5>",
+            "orgc_id": "<id:5>",
+            "user_id": "<id:6>"
+        },
+        "Object": {
+            "comment": "",
+            "deleted": false,
+            "description": "MispObjectFetchCharacterizationTest fixture",
+            "distribution": 5,
+            "event_id": "<id:1>",
+            "first_seen": null,
+            "id": "<id:3>",
+            "last_seen": null,
+            "meta-category": "test",
+            "name": "test-object-a",
+            "sharing_group_id": 0,
+            "template_uuid": "18b14cae-3af2-4cf6-892f-4be75f7d1987",
+            "template_version": 1,
+            "timestamp": "<time>",
+            "uuid": "<id:7>"
+        }
+    },
+    {
+        "Attribute": [],
+        "Event": {
+            "distribution": 3,
+            "id": "<id:1>",
+            "org_id": "<id:5>",
+            "orgc_id": "<id:5>",
+            "user_id": "<id:6>"
+        },
+        "Object": {
+            "comment": "",
+            "deleted": true,
+            "description": "MispObjectFetchCharacterizationTest fixture",
+            "distribution": 5,
+            "event_id": "<id:1>",
+            "first_seen": null,
+            "id": "<id:8>",
+            "last_seen": null,
+            "meta-category": "test",
+            "name": "test-object-b",
+            "sharing_group_id": 0,
+            "template_uuid": "803a8e1c-5893-44a4-8a00-2337beb2597b",
+            "template_version": 1,
+            "timestamp": "<time>",
+            "uuid": "<id:9>"
+        }
+    }
+]

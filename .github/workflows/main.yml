@@ -358,7 +358,9 @@ jobs:
       - name: Run PHP tests
         run: |
           ./app/Vendor/bin/parallel-lint --exclude app/Lib/cakephp/ --exclude app/Vendor/ -e php,ctp app/
-          sudo -u www-data ./app/Vendor/bin/phpunit app/Test/
+          # -c is required: the tests load their framework stubs from
+          # app/Test/bootstrap.php, which only the config file wires up.
+          sudo -u www-data ./app/Vendor/bin/phpunit -c app/phpunit.xml --testsuite unit
 
       - name: Clone test files
         uses: actions/checkout@v5
