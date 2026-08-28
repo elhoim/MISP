@@ -1481,3 +1481,10 @@ The measurement recipe used for the galaxy fix, which any of these can reuse:
    set `bulkEntry = true` (disabling the `afterSave` relation update) and passed
    `'validate' => false`. Several candidates in the refuted list died on exactly this point -
    their per-row saves were doing load-bearing work.
+
+6. **If you map batch rows back by position, say why it is safe.** InnoDB allocates one
+   contiguous block of auto-increment values to a single multi-row INSERT whose row count it
+   knows up front (a "simple insert"), which holds under every `innodb_autoinc_lock_mode`
+   setting. That is what makes `LAST_INSERT_ID() + offset` a valid mapping. It was confirmed
+   empirically here on MariaDB 10.11 by the identical fingerprints, but state the guarantee
+   explicitly in any PR that relies on it - it is the first thing a reviewer will question.
