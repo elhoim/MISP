@@ -17,10 +17,7 @@
 - Coverage filter MUST exclude: `app/Lib/cakephp`, `app/Vendor`, `app/Plugin/DebugKit`, `app/Plugin/CakeResque`. The last two are vendored third-party *test* code.
 - The existing 477 tests must still pass after every task. That number is the regression gate.
 - Layer boundary (enforced by which testsuite a file lives in): **Unit** = no DB, no Redis, no HTTP, no network. **Integration** = DB/Redis allowed, no HTTP. **Live** = full stack.
-- Baseline to beat, measured on commit `ff132f4d` with the P0 coverage filter applied:
-  unit 1.77 %, live 18.46 %, union 19.67 % of 117,925 statement lines. (An unfiltered
-  measurement gives 122,618 statements / 18.95 % union, because it counts the DebugKit and
-  CakeResque plugins' own test code.)
+- Baseline to beat, measured on commit `ff132f4d` with the P0 coverage filter applied: unit 1.77 %, live 18.46 %, union 19.67 % of 117,925 statement lines. (An unfiltered measurement gives 122,618 statements / 18.95 % union, because it counts the DebugKit and CakeResque plugins' own test code.)
 - This targets the `elhoim/MISP` fork; upstream-merge compatibility is explicitly NOT a constraint, but keep Task 1 cherry-pickable.
 
 ---
@@ -143,14 +140,11 @@ Expected: `Tests: 477` with no errors, and `Generating code coverage report in C
 python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('clover.xml').getroot(); print(len([f for f in r.iter('file')]), 'files')"
 ```
 
-Expected: `528 files` — that is 590 source files minus the 62 vendored plugin files
-(DebugKit 50, CakeResque 12) that the `<exclude>` block removes. If you see 590, the
-exclude is not being applied.
+Expected: `528 files` — that is 590 source files minus the 62 vendored plugin files (DebugKit 50, CakeResque 12) that the `<exclude>` block removes. If you see 590, the exclude is not being applied.
 
 - [ ] **Step 6: Clear the deprecation warnings the upgrade surfaces**
 
-PHPUnit 9 deprecates `assertRegExp()`. Five call sites use it; the upgrade is what surfaces
-them, so they are fixed in this commit rather than left as noise:
+PHPUnit 9 deprecates `assertRegExp()`. Five call sites use it; the upgrade is what surfaces them, so they are fixed in this commit rather than left as noise:
 
 ```bash
 sed -i 's/\$this->assertRegExp(/$this->assertMatchesRegularExpression(/g' \
@@ -164,8 +158,7 @@ grep -rn 'assertRegExp(' app/Test/ || echo "none remaining"
 ./app/Vendor/bin/phpunit -c app/phpunit.xml | tail -3
 ```
 
-Expected: `none remaining`, then `Tests: 477, Assertions: 1087, Skipped: 2` with **no**
-warnings line.
+Expected: `none remaining`, then `Tests: 477, Assertions: 1087, Skipped: 2` with **no** warnings line.
 
 - [ ] **Step 7: Commit**
 
@@ -192,9 +185,9 @@ the DebugKit/CakeResque plugins' own test code."
 **Interfaces:**
 - Consumes: `app/phpunit.xml` from Task 1.
 - Produces:
-  - `MispTest\Support\FrameworkStubs::install(): void` — declares stub classes if absent; idempotent.
-  - `MispTest\Support\FrameworkStubs::loadRealParents(string $file): void` — requires the real CakePHP/in-repo parent classes a given source file needs before it is included.
-  - Constants `APP`, `DS`, `ROOT`, `WWW_ROOT`, `TMP` defined by the bootstrap.
+- `MispTest\Support\FrameworkStubs::install(): void` — declares stub classes if absent; idempotent.
+- `MispTest\Support\FrameworkStubs::loadRealParents(string $file): void` — requires the real CakePHP/in-repo parent classes a given source file needs before it is included.
+- Constants `APP`, `DS`, `ROOT`, `WWW_ROOT`, `TMP` defined by the bootstrap.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -710,8 +703,8 @@ Gated on a flag file so instance setup is excluded from coverage."
 **Interfaces:**
 - Consumes: capture files from Task 5; a clover XML from Task 1.
 - Produces:
-  - `merge_coverage.py <cov_dir> <out.json>` → `{"<rel path>": [lines]}`
-  - `report.py <clover.xml> <merged.json>` → prints the table and writes `coverage-summary.json` with keys `unit_pct`, `live_pct`, `union_pct`, `statements`.
+- `merge_coverage.py <cov_dir> <out.json>` → `{"<rel path>": [lines]}`
+- `report.py <clover.xml> <merged.json>` → prints the table and writes `coverage-summary.json` with keys `unit_pct`, `live_pct`, `union_pct`, `statements`.
 
 - [ ] **Step 1: Write the failing test**
 

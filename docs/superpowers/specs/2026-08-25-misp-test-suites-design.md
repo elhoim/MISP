@@ -1,9 +1,6 @@
 # MISP 2.5 — Two-Layer Test Suite Design
 
-**Status:** design, pending review
-**Date:** 2026-08-25
-**Baseline commit:** `ff132f4d` (MISP 2.5.44)
-**Target:** `elhoim/MISP` fork, optimised for coverage (not upstream-merge-constrained)
+**Status:** design, pending review **Date:** 2026-08-25 **Baseline commit:** `ff132f4d` (MISP 2.5.44) **Target:** `elhoim/MISP` fork, optimised for coverage (not upstream-merge-constrained)
 
 ---
 
@@ -69,19 +66,11 @@ The original plan scoped `Console/Command` out on the assumption that CI exercis
 
 ## 3. Approaches considered
 
-**A. Keep the bare-stub convention, add files.**
-Every test file re-declares its own `App`/`Configure`/`ClassRegistry` stubs, as today.
-*Pro:* zero infrastructure, matches existing code exactly.
-*Con:* the stub block is already ~40 lines duplicated across files with `class_exists` guards to stop them colliding. At 100+ files this becomes the dominant maintenance cost, and collisions (the real `WorkflowBaseModule` vs a stub) are already observable.
+**A. Keep the bare-stub convention, add files.** Every test file re-declares its own `App`/`Configure`/`ClassRegistry` stubs, as today. *Pro:* zero infrastructure, matches existing code exactly. *Con:* the stub block is already ~40 lines duplicated across files with `class_exists` guards to stop them colliding. At 100+ files this becomes the dominant maintenance cost, and collisions (the real `WorkflowBaseModule` vs a stub) are already observable.
 
-**B. Shared bootstrap + three explicit layers. ← recommended**
-One `app/Test/bootstrap.php` owns the framework stubs; tests declare which layer they belong to; each layer has a defined capability boundary and its own PHPUnit testsuite.
-*Pro:* removes duplication, makes the unit/integration split enforceable, lets conformance tests scale across whole file families, keeps the fast suite fast.
-*Con:* one-time refactor of the existing 19 files (mechanical — delete stub blocks, require bootstrap).
+**B. Shared bootstrap + three explicit layers. ← recommended** One `app/Test/bootstrap.php` owns the framework stubs; tests declare which layer they belong to; each layer has a defined capability boundary and its own PHPUnit testsuite. *Pro:* removes duplication, makes the unit/integration split enforceable, lets conformance tests scale across whole file families, keeps the fast suite fast. *Con:* one-time refactor of the existing 19 files (mechanical — delete stub blocks, require bootstrap).
 
-**C. Adopt CakePHP 2's full test framework (fixtures, `ControllerTestCase`).**
-*Pro:* idiomatic for the framework; controller tests attribute coverage natively.
-*Con:* CakePHP 2's fixture layer is slow and dated, MISP's models are heavily interdependent (`Event` 6,168 stmts, `Server` 6,700), and the live Python suite already covers controllers over HTTP at 16.6 %. Large investment duplicating existing signal.
+**C. Adopt CakePHP 2's full test framework (fixtures, `ControllerTestCase`).** *Pro:* idiomatic for the framework; controller tests attribute coverage natively. *Con:* CakePHP 2's fixture layer is slow and dated, MISP's models are heavily interdependent (`Event` 6,168 stmts, `Server` 6,700), and the live Python suite already covers controllers over HTTP at 16.6 %. Large investment duplicating existing signal.
 
 **Decision: B**, with a narrow slice of C (real-DB PHP tests) where asserting internals is the only way to get the assertion — see Layer 2.
 
@@ -276,63 +265,27 @@ Live-side movement from the layer-3 scripts:
 | `Controller` | 16.62 % | 17.41 % |
 | `Console/Command` | 1.22 % | 1.62 % |
 
-Overall: unit 5.72 %, live 21.56 %, **union 24.83 %**, 430 of 528 files touched
-(264 at baseline).
+Overall: unit 5.72 %, live 21.56 %, **union 24.83 %**, 430 of 528 files touched (264 at baseline).
 
 ### What layers 2 and 3 taught
 
-**The console is dangerous to probe.** `cake <Shell>` with no subcommand can
-run that shell's *default action*, and `cake Live` with no argument takes the
-instance **offline**. Probing shells bare set `MISP.live=false` mid-run and
-every PyMISP suite afterwards failed to connect, with an error that pointed at
-PyMISP rather than at the cause — the same shape of failure the isolation
-contract exists to prevent, reintroduced by the very script meant to exercise
-the console. Shells are now probed with an *invalid subcommand*, which forces
-the option parser to print usage and cannot trigger a default action.
+**The console is dangerous to probe.** `cake <Shell>` with no subcommand can run that shell's *default action*, and `cake Live` with no argument takes the instance **offline**. Probing shells bare set `MISP.live=false` mid-run and every PyMISP suite afterwards failed to connect, with an error that pointed at PyMISP rather than at the cause — the same shape of failure the isolation contract exists to prevent, reintroduced by the very script meant to exercise the console. Shells are now probed with an *invalid subcommand*, which forces the option parser to print usage and cannot trigger a default action.
 
-**Console coverage barely moved** (1.22 % → 1.62 %). Usage probes exercise
-argument parsing only; the 12,572 statements are in the subcommands
-themselves, which need a disposable instance to run against. That tranche
-needs its own design, not more probes.
+**Console coverage barely moved** (1.22 % → 1.62 %). Usage probes exercise argument parsing only; the 12,572 statements are in the subcommands themselves, which need a disposable instance to run against. That tranche needs its own design, not more probes.
 
-**Layer 2 paid for itself on its first run.** The engine-parity test
-immediately found that `NoAclCorrelationBehavior::runGetAttributesRelatedToEvent`
-takes one parameter fewer than the Default engine, so the `$sgids` that
-`Correlation.php:1115` passes are silently discarded. For an engine that
-deliberately skips ACL that is defensible — which is why the invariant became
-"no engine may *require* more than the caller passes" (narrowing is safe,
-widening breaks the call site) rather than "identical arity". A second test
-pins the current divergence set so a *new* one cannot hide among accepted ones.
+**Layer 2 paid for itself on its first run.** The engine-parity test immediately found that `NoAclCorrelationBehavior::runGetAttributesRelatedToEvent` takes one parameter fewer than the Default engine, so the `$sgids` that `Correlation.php:1115` passes are silently discarded. For an engine that deliberately skips ACL that is defensible — which is why the invariant became "no engine may *require* more than the caller passes" (narrowing is safe, widening breaks the call site) rather than "identical arity". A second test pins the current divergence set so a *new* one cannot hide among accepted ones.
 
 ### What P1 actually taught
 
-**Reflection-only conformance adds no coverage.** The first cut of the widget
-and module suites asserted contracts through `ReflectionClass` and moved the
-number by *zero*: reading property defaults never executes a method body. All
-of the gain came from *constructing* every widget and module and driving
-`handler()`. The conformance assertions are still worth keeping — they catch a
-malformed *new* widget, which no per-file test does — but they must be paired
-with execution or they buy safety without coverage. This is the §11 risk
-landing in practice, on the first attempt.
+**Reflection-only conformance adds no coverage.** The first cut of the widget and module suites asserted contracts through `ReflectionClass` and moved the number by *zero*: reading property defaults never executes a method body. All of the gain came from *constructing* every widget and module and driving `handler()`. The conformance assertions are still worth keeping — they catch a malformed *new* widget, which no per-file test does — but they must be paired with execution or they buy safety without coverage. This is the §11 risk landing in practice, on the first attempt.
 
-**Execution needs a support layer, not just stubs.** Three additions were
-required before anything would run: a permissive `FakeModel` for
-`ClassRegistry`-resolved collaborators, CakePHP's global helpers (`__()` above
-all — MISP source calls it pervasively), and an autoloader over `app/Lib`,
-because `App::uses()` is a no-op under the stubs.
+**Execution needs a support layer, not just stubs.** Three additions were required before anything would run: a permissive `FakeModel` for `ClassRegistry`-resolved collaborators, CakePHP's global helpers (`__()` above all — MISP source calls it pervasively), and an autoloader over `app/Lib`, because `App::uses()` is a no-op under the stubs.
 
-**The zero-overlap prediction held exactly.** `Lib/Dashboard` and
-`Model/WorkflowModules` were 0.00 % live, so their unit gains passed into the
-union nearly 1:1 (+3.02 pp unit → +3.00 pp union).
+**The zero-overlap prediction held exactly.** `Lib/Dashboard` and `Model/WorkflowModules` were 0.00 % live, so their unit gains passed into the union nearly 1:1 (+3.02 pp unit → +3.00 pp union).
 
-**`View/Helper` resists layer 1.** `NavbarHelper` is 886 statements but
-yielded 60: with injected collaborators returning empty, the per-controller
-branches short-circuit. Driving them needs real `Acl`/`Html` helpers, which is
-integration-layer work — this tranche should move to Layer 2.
+**`View/Helper` resists layer 1.** `NavbarHelper` is 886 statements but yielded 60: with injected collaborators returning empty, the per-controller branches short-circuit. Driving them needs real `Acl`/`Html` helpers, which is integration-layer work — this tranche should move to Layer 2.
 
-**`AttachmentObjectBuilder` (804 stmts, 0 % in both) was deferred.** Its
-`build()` requires real binary samples and installed object templates; it is a
-fixtures project, not a quick win.
+**`AttachmentObjectBuilder` (804 stmts, 0 % in both) was deferred.** Its `build()` requires real binary samples and installed object templates; it is a fixtures project, not a quick win.
 
 ## 11. Risks
 
