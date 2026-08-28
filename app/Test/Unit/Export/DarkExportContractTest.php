@@ -379,18 +379,84 @@ class DarkExportContractTest extends TestCase
         $this->assertSame([], $rules, 'a value matching the whitelist must be excluded from the export');
     }
 
+    /**
+     * handler() is a no-op, and that is deliberate rather than a defect.
+     *
+     * 'bro' appears in no model's $validFormats, so restSearch() never reaches
+     * this class; MispAttribute::bro() and Job.php:63 call export() directly.
+     * An earlier revision of this test annotated the no-op as a KNOWN-DEFECT.
+     * That was wrong, and the annotation was removed rather than reworded: an
+     * unreachable method is not a bug, and a KNOWN-DEFECT that does not hold up
+     * becomes a phantom bug report to maintainers (ADR 0002).
+     *
+     * The real trap is what happens if someone adds 'bro' to a $validFormats
+     * map. restSearch() guards each element with `if ($temp !== '')`, which is
+     * true for null, so every event would append an empty line and the export
+     * would silently emit a header and nothing else. Upstream PR #11016
+     * documents that precondition in the production docblock; today the fatal
+     * on the undefined header() is what stops anyone getting that far.
+     */
     public function testBroExportHandlerIsANoOpBecauseTheFormatDrivesThroughExportInstead(): void
     {
-        // KNOWN-DEFECT: unlike every other export format, BroExport::handler()
-        // has an empty body and unconditionally returns null - it does not
-        // delegate to export(). The two production callers we found
-        // (EventsController::automation(), MispAttribute::bro()) both
-        // instantiate BroExport directly and read ->mispTypes / call
-        // ->export() themselves; neither goes through handler(). We do not
-        // have full call-site coverage to say handler() is provably dead
-        // everywhere - only that it is a documented no-op today.
         $export = new BroExport();
-        $this->assertNull($export->handler(self::attribute(), self::rpzOptions()), 'handler() is a documented no-op for BroExport');
+        $this->assertNull($export->handler(self::attribute(), self::rpzOptions()), 'handler() is a no-op for BroExport');
+    }
+
+    /**
+     * KNOWN-DEFECT: export() declares the optional $whitelist before the
+     * required $instanceString, which PHP 8 reports as
+     *
+     *   Deprecated: Optional parameter $whitelist declared before required
+     *   parameter $instanceString is implicitly treated as a required parameter
+     *
+     * on every load of the file. The substantive half is that $whitelist's
+     * default is then silently discarded - reflection reports all five
+     * parameters as required - so omitting the allowedlist raises
+     * ArgumentCountError instead of defaulting to array(). The signature
+     * promises something PHP does not deliver.
+     *
+     * Fixed upstream in PR #11015 by giving $instanceString a default. When
+     * that merges, isOptional() becomes true for both and this test should be
+     * inverted rather than deleted.
+     */
+    public function testBroExportSignatureSilentlyDiscardsTheWhitelistDefault(): void
+    {
+        $whitelist = (new ReflectionMethod(BroExport::class, 'export'))->getParameters()[3];
+
+        $this->assertSame('whitelist', $whitelist->getName(), 'guard against the parameter order changing under us');
+        $this->assertFalse(
+            $whitelist->isOptional(),
+            'PHP treats $whitelist as required despite its array() default, because a required ' .
+            'parameter follows it; if this now passes, PR #11015 has landed and the KNOWN-DEFECT is fixed'
+        );
+    }
+
+    /**
+     * KNOWN-DEFECT: replaceIllegalChars() runs the value through
+     * FILTER_SANITIZE_STRING, deprecated in PHP 8.1 and slated for removal, so
+     * this is a forward-compatibility break rather than log noise. It emits one
+     * deprecation per attribute exported, and BroExport.php is the only file
+     * under app/ still using the constant.
+     *
+     * The assertion below pins the consequence rather than the constant: the
+     * filter treats '< 6 and 7 >' as a tag and deletes it, mangling any event
+     * comment containing a comparison. Bro/Zeek intel files are tab-separated,
+     * so '<' and '>' need no escaping and this mangling serves no purpose.
+     *
+     * Fixed upstream in PR #11015, which replaces the filter with an explicit
+     * high-byte strip plus strip_tags(). That combination is byte-identical on
+     * 19 of the 20 inputs compared; this input is the one deliberate
+     * divergence, so when the PR merges this test flips to asserting the value
+     * survives intact.
+     */
+    public function testBroExportSanitiserDeletesTextBetweenComparisonOperators(): void
+    {
+        $this->assertSame(
+            '5  2',
+            @BroExport::replaceIllegalChars('5 < 6 and 7 > 2'),
+            'FILTER_SANITIZE_STRING reads "< 6 and 7 >" as a tag and drops it; after PR #11015 ' .
+            'the string survives intact and this expectation becomes the unmangled input'
+        );
     }
 
     public function testBroExportFooterAndSeparatorAreNewlines(): void
