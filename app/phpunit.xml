@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit bootstrap="Test/bootstrap.php"
+         colors="true"
+         convertDeprecationsToExceptions="false"
+         cacheResultFile="tmp/.phpunit.result.cache">
+  <testsuites>
+    <testsuite name="unit">
+      <directory suffix="Test.php">Test</directory>
+      <exclude>Test/Integration</exclude>
+    </testsuite>
+    <testsuite name="integration">
+      <directory suffix="Test.php">Test/Integration</directory>
+    </testsuite>
+  </testsuites>
+  <coverage processUncoveredFiles="false">
+    <include>
+      <directory suffix=".php">Model</directory>
+      <directory suffix=".php">Controller</directory>
+      <directory suffix=".php">Lib</directory>
+      <directory suffix=".php">Console</directory>
+      <directory suffix=".php">Plugin</directory>
+      <directory suffix=".php">View</directory>
+    </include>
+    <exclude>
+      <directory>Lib/cakephp</directory>
+      <directory>Vendor</directory>
+      <directory>Plugin/DebugKit</directory>
+      <directory>Plugin/CakeResque</directory>
+    </exclude>
+  </coverage>
+</phpunit>
