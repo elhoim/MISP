@@ -15,6 +15,21 @@ class FastLookupIndexCorruptException extends FastLookupIndexUnavailableExceptio
 {
 }
 
+/**
+ * A generation's filter is full and refused tokens: the write failed, and the
+ * generation cannot take them until it is rebuilt larger.
+ */
+class FastLookupIndexFullException extends FastLookupIndexUnavailableException
+{
+    public $generation;
+
+    public function __construct(string $generation, ?Throwable $previous = null)
+    {
+        parent::__construct('The fastLookup filter is full.', 0, $previous);
+        $this->generation = $generation;
+    }
+}
+
 /** The set of indexed IP prefix lengths changed after the caller read it. */
 class FastLookupPrefixesChangedException extends FastLookupIndexUnavailableException
 {
@@ -65,6 +80,8 @@ class FastLookupFilter
     const POSTING_BATCH = 128;
     const READ_BATCH_SIZE = 1024;
     const DELETE_BATCH = 500;
+    /** The add script's error reply; its ARGV[1] names the full generation. */
+    const FULL_ERROR = 'Bloom filter is full';
 
     private $prefix;
     private $legacyPrefix;
@@ -133,6 +150,12 @@ class FastLookupFilter
     public static function shardCapacity(int $capacity, int $shards): int
     {
         return intdiv($capacity + $shards - 1, $shards);
+    }
+
+    /** What a generation's shards hold together; null shards is a legacy single filter. */
+    public static function reservedCapacity(int $capacity, ?int $shards): int
+    {
+        return $shards === null ? $capacity : $shards * self::shardCapacity($capacity, $shards);
     }
 
     /** Digest bytes 4-7; the posting bucket uses bytes 0-3. */
@@ -636,8 +659,7 @@ LUA
         foreach ($this->filterKeys($generation, $info['shards']) as $key) {
             $filterBytes = $this->sumMemory($filterBytes, $this->memory($key, $reason));
         }
-        $reserved = $info['shards'] === null ? $info['capacity']
-            : $info['shards'] * self::shardCapacity($info['capacity'], $info['shards']);
+        $reserved = self::reservedCapacity($info['capacity'], $info['shards']);
         $postingBytes = 0; $entries = 0;
         for ($i = 0; $i < $info['buckets']; ++$i) {
             $bucket = $this->generationPrefix($generation) . 'x:' . $i;
@@ -936,6 +958,9 @@ LUA
             $result = $this->call('eval', [$script, array_merge($keys, $args), count($keys)]);
         } catch (FastLookupIndexUnavailableException $e) {
             $cause = $e->getPrevious();
+            if ($cause && strpos($cause->getMessage(), self::FULL_ERROR) !== false) {
+                throw new FastLookupIndexFullException((string)$args[0], $e);
+            }
             if ($cause && strpos($cause->getMessage(), 'posting resource limit exceeded') !== false) {
                 throw new OverflowException('A fastLookup posting exceeds the limit of 8 MiB or 500000 attribute IDs.', 0, $e);
             }
@@ -949,6 +974,9 @@ LUA
         }
         if ($result === false) {
             $error = $this->call('getLastError', []);
+            if (is_string($error) && strpos($error, self::FULL_ERROR) !== false) {
+                throw new FastLookupIndexFullException((string)$args[0]);
+            }
             if (is_string($error) && strpos($error, 'posting resource limit exceeded') !== false) {
                 throw new OverflowException('A fastLookup posting exceeds the limit of 8 MiB or 500000 attribute IDs.');
             }

@@ -865,18 +865,49 @@ class FastLookupFilterTest extends TestCase
         $this->assertSame(['live1', '0', '2', $t4, $t10, '1', '1', $t7], array_slice($arguments, $keyCount));
     }
 
-    public function testFullShardFailsTheAddInsteadOfDroppingTokens(): void
+    public function fullShardReplies(): array
     {
-        $redis = $this->recordingRedis(['hMGet' => ['!' => 'live1', 'shards' => '2', 'bloom_type' => 'bloomfltr'], 'eval' => false,
-            'getLastError' => 'Bloom filter is full']);
+        return [
+            'refused script' => [['eval' => false, 'getLastError' => 'Bloom filter is full']],
+            'script error thrown' => [['eval' => new RuntimeException('Bloom filter is full')]],
+        ];
+    }
+
+    /** @dataProvider fullShardReplies */
+    public function testFullShardFailsTheAddWithTheFullGeneration(array $replies): void
+    {
+        $redis = $this->recordingRedis(['hMGet' => ['!' => 'live1', 'shards' => '2', 'bloom_type' => 'bloomfltr']] + $replies);
         try {
             $this->filter(null, $redis)->add('live1', [['id' => '1', 'tokens' => [$this->shardedToken(4)]]]);
             $this->fail('A full shard must fail the add.');
-        } catch (FastLookupIndexUnavailableException $e) {
+        } catch (FastLookupIndexFullException $e) {
+            $this->assertSame('live1', $e->generation);
             $this->assertNotInstanceOf(FastLookupIndexCorruptException::class, $e);
         }
         $evals = array_values(array_filter($redis->arguments, function ($call) { return $call[0] === 'eval'; }));
         $this->assertStringContainsString("return redis.error_reply('Bloom filter is full')", $evals[0][1][0]);
+    }
+
+    public function testStatisticsEstimateFalsePositivesFromTheReservedTotal(): void
+    {
+        $filter = $this->filter(null, new class(['live' => 'live1'] + $this->validMetadataFields()) {
+            private $fields;
+            public function __construct(array $fields) { $this->fields = $fields; }
+            public function hGetAll($key) { return $this->fields; }
+            public function hMGet($key, $fields) { return ['!' => 'live1', 'shards' => '3', 'bloom_type' => 'bloomfltr']; }
+            public function eval($script, $args, $keys) { return ['1000', '0.001', '900', '0', '1', '0', false, false, false]; }
+            public function rawCommand(...$args) { return 100; }
+            public function hScan($key, &$cursor, $pattern = null, $count = 0) { $cursor = 0; return ['!' => 'live1']; }
+            public function clearLastError() { return true; }
+            public function getLastError() { return null; }
+        });
+        $this->assertSame(1002, FastLookupFilter::reservedCapacity(1000, 3));
+        $this->assertSame(1000, FastLookupFilter::reservedCapacity(1000, null));
+        $stats = $filter->statistics('live1');
+        $this->assertSame(1000, $stats['capacity']);
+        $this->assertSame(FastLookupFilter::estimatedFalsePositiveRate(1002, 0.001, 900), $stats['estimated_false_positive_rate']);
+        $this->assertNotSame(FastLookupFilter::estimatedFalsePositiveRate(1000, 0.001, 900), $stats['estimated_false_positive_rate']);
+        $this->assertSame(300, $stats['filter_bytes'], 'Every shard is measured.');
     }
 
     public function testCandidatesProbeEachTokenInItsShard(): void

@@ -209,6 +209,7 @@ class FastLookupIndexManager
             $info = $metadata['generations'][$live];
             $result['filter'] = [
                 'capacity' => $info['capacity'],
+                'reserved_capacity' => isset($info['shards']) ? FastLookupFilter::reservedCapacity($info['capacity'], $info['shards']) : $info['capacity'],
                 'rate' => $info['rate'],
                 'inserted' => $info['inserted'],
                 'stale' => $info['stale'],
@@ -381,7 +382,10 @@ class FastLookupIndexManager
             if ($staged && $remaining > 0 && $targets) {
                 $dirty = $this->query("SELECT setting, value FROM {$this->settingsTable} WHERE setting LIKE ? ORDER BY id LIMIT $remaining", [self::DIRTY_PREFIX . '%'])->fetchAll(PDO::FETCH_ASSOC);
                 foreach ($dirty as $row) {
-                    $this->refreshEvent($targets, substr($row['setting'], strlen(self::DIRTY_PREFIX)), $scope);
+                    if (!$this->refreshOrReplace($state, $targets, substr($row['setting'], strlen(self::DIRTY_PREFIX)), $scope)) {
+                        // The event stays queued for the generation replacing the full one.
+                        break;
+                    }
                     // Never erase a newer mutation, including a change emitted by
                     // a callback invoked while processing the current batch.
                     $this->query("DELETE FROM {$this->settingsTable} WHERE setting = ? AND value = ?", [$row['setting'], $row['value']]);
@@ -548,7 +552,7 @@ class FastLookupIndexManager
             $metadata = $this->filter()->metadata();
         } catch (FastLookupIndexCorruptException $e) {
             if (!$this->filter()->moduleAvailable()) {
-                // Redis lacks RedisBloom: nothing can be built now.
+                // Redis has no Bloom module: nothing can be built now.
                 throw $e;
             }
             $metadata = null;
@@ -812,6 +816,62 @@ class FastLookupIndexManager
         // compare-and-set fences a worker whose lease lapses after this.
         $this->renewWorkerLease();
         $this->filter()->setCursor($build['generation'], $build['cursor']);
+    }
+
+    /**
+     * A full filter has lost tokens it was sent, so it must never answer
+     * again. False when the live generation was dropped; a failed build only
+     * leaves the live generation, which still takes the event.
+     */
+    private function refreshOrReplace(array &$state, array &$targets, string $eventId, array $scope): bool
+    {
+        while (true) {
+            try {
+                $this->refreshEvent($targets, $eventId, $scope);
+                return true;
+            } catch (FastLookupIndexFullException $e) {
+                $this->replaceFullGeneration($state, $e);
+                if (empty($state['generation'])) {
+                    return false;
+                }
+                $targets = $this->targets($state);
+            }
+        }
+    }
+
+    private function replaceFullGeneration(array &$state, FastLookupIndexFullException $e): void
+    {
+        $build = $state['build'] ?? null;
+        if (!empty($state['generation']) && $e->generation === $state['generation']) {
+            $this->attribute->log('The fast lookup filter is full; lookups answer 503 until a larger rebuild is ready.', LOG_WARNING);
+            $state['generation'] = null;
+            $state['fingerprint'] = null;
+            unset($state['last_build']);
+            if (empty($build)) {
+                $state['build'] = $this->newBuild(null);
+            } elseif (!empty($build['error'])) {
+                // Nothing serves any more, so a failed build restarts without waiting for a resume.
+                $state['build']['error'] = null;
+            }
+            return;
+        }
+        if ($build && $e->generation === $build['generation']) {
+            $this->attribute->log('The fast lookup rebuild filled its filter; resume it to retry at twice the capacity.', LOG_WARNING);
+            $state['build'] = self::failedBuild($build, true);
+            return;
+        }
+        throw $e;
+    }
+
+    /** A build that filled its filter restarts at twice its capacity, or it would fill again. */
+    private static function failedBuild(array $build, bool $full): array
+    {
+        $failed = array_merge($build, ['error' => self::BUILD_FAILED, 'reserved' => false,
+            'cursor' => '0', 'processed' => 0, 'scan_complete' => false]);
+        if ($full) {
+            $failed['capacity'] = 2 * (int)$build['capacity'];
+        }
+        return $failed;
     }
 
     private function refreshEvent(array $targets, string $eventId, array $scope): void
@@ -1094,8 +1154,8 @@ class FastLookupIndexManager
                 if ($phase === 'build' && !empty($state['build'])) {
                     // The live generation keeps serving; the build restarts
                     // from scratch in a fresh generation after a resume.
-                    $state['build'] = array_merge($state['build'], ['error' => self::BUILD_FAILED, 'reserved' => false,
-                        'cursor' => '0', 'processed' => 0, 'scan_complete' => false]);
+                    $state['build'] = self::failedBuild($state['build'],
+                        $e instanceof FastLookupIndexFullException && $e->generation === $state['build']['generation']);
                 } else {
                     $state['error'] = 'The IOC index update failed. Resume the job, or rebuild if its checkpoint is stale.';
                 }

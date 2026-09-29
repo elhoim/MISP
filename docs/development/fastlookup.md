@@ -113,12 +113,14 @@ reaches at about 25M in-scope attributes; 64 MiB shards stay under it with no
 configuration. The info hash records the shard count (`shards`) and the filter
 type (`bloom_type`); a generation built before sharding has one filter
 `g:<generation>:bf` and neither field, and is served as it is. A full shard
-refuses further tokens, and the write fails closed rather than dropping them.
-`BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter cannot rule out
-still goes to SQL for exact values, or reads its postings for range/domain
-values, which SQL then revalidates. Range and domain attribute IDs live in
-listpack-sized bucket hashes (about 64 fields per bucket); a posting over 64
-bytes moves out to an overflow key `<bucket>:<hex token>` holding
+refuses further tokens, and the write fails closed rather than dropping them: a
+full live generation stops serving, answering 503 until a scheduled rebuild
+replaces it, and a full rebuild fails and restarts at twice its capacity when
+resumed. `BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter cannot
+rule out still goes to SQL for exact values, or reads its postings for
+range/domain values, which SQL then revalidates. Range and domain attribute IDs
+live in listpack-sized bucket hashes (about 64 fields per bucket); a posting
+over 64 bytes moves out to an overflow key `<bucket>:<hex token>` holding
 `<generation>|<ids>`, capped at 8 MiB and 500,000 IDs, so one popular value
 never inflates its bucket. Edits and deletions leave stale filter entries behind
 — the filter only grows, so a removed or changed value's old token is never

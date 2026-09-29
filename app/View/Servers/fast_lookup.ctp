@@ -56,7 +56,7 @@ app/Console/cake Admin processFastLookup</pre>
             <p class="alert"><?= __('The filter holds more entries than its configured capacity. Answers stay correct, but lookups are slower; schedule a rebuild.') ?></p>
         <?php endif; ?>
         <p class="muted"><?= __('Filter fill') ?>: <?= h(number_format($filterCounters['inserted'])) ?> / <?= h(number_format($filterCounters['capacity'])) ?>
-            (<?= __('estimated false-positive rate') ?> <?= h(sprintf('%.4f%%', 100 * FastLookupFilter::estimatedFalsePositiveRate($filterCounters['capacity'], $filterCounters['rate'], $filterCounters['inserted']))) ?>,
+            (<?= __('estimated false-positive rate') ?> <?= h(sprintf('%.4f%%', 100 * FastLookupFilter::estimatedFalsePositiveRate($filterCounters['reserved_capacity'] ?? $filterCounters['capacity'], $filterCounters['rate'], $filterCounters['inserted']))) ?>,
             <?= __('stale') ?> <?= h(number_format($filterCounters['stale'])) ?>)</p>
     <?php endif; ?>
     <h3><?= __('Filter and memory') ?></h3>

@@ -20,6 +20,8 @@ class FastLookupFilterContractProxy
     public $failShardReserve = false;
     /** [KEYS index, type]: the reserve script reads that shard's TYPE as the given one. */
     public $foreignShardType = null;
+    /** Runs once before the next EVAL: Redis state changes after PHP read it. */
+    public $beforeEval;
     /** method => error message: the next such call fails like a timeout or BUSY reply. */
     public $failNext = [];
     public function __construct($redis) { $this->redis = $redis; }
@@ -52,6 +54,11 @@ class FastLookupFilterContractProxy
             [$index, $type] = $this->foreignShardType;
             $args[0] = str_replace("local found = redis.call('TYPE', KEYS[i]).ok", "local found = i == $index and '$type' or redis.call('TYPE', KEYS[i]).ok", $args[0], $replaced);
             if ($replaced !== 1) { throw new RuntimeException('The reserve script no longer reads each shard type.'); }
+        }
+        if ($lower === 'eval' && $this->beforeEval) {
+            $hook = $this->beforeEval;
+            $this->beforeEval = null;
+            $hook();
         }
         $result = $this->redis->{$name}(...$args);
         if ($lower === 'eval' && isset($result[1]) && is_array($result[1])) {
@@ -466,6 +473,23 @@ try {
         $redis->hSet($shardInfo, $field, $value);
     }
     $assert($sharded->candidates('s1', $probe)[0]['exact'] === true, 'The restored layout answers again');
+    // The same half layouts, written after PHP read a valid one: the Lua guard refuses them itself.
+    $layout = $redis->hMGet($shardInfo, ['shards', 'bloom_type']);
+    foreach (['without shards' => [['shards'], []], 'without bloom_type' => [['bloom_type'], []], 'with zero shards' => [[], ['shards' => '0']]] as $case => [$drop, $set]) {
+        $proxy->beforeEval = static function () use ($redis, $shardInfo, $drop, $set) {
+            if ($drop) { $redis->hDel($shardInfo, ...$drop); }
+            if ($set) { $redis->hMSet($shardInfo, $set); }
+        };
+        try {
+            $sharded->metadata();
+            $assert(false, "The guard must refuse a layout $case");
+        } catch (FastLookupIndexCorruptException $e) {
+            $assert($e->getMessage() === 'A fastLookup generation is missing.', "The Lua guard refuses a layout $case: " . $e->getMessage());
+        }
+        $assert($proxy->beforeEval === null, "The layout $case changed between the read and the script");
+        $redis->hMSet($shardInfo, $layout);
+    }
+    $assert($sharded->candidates('s1', $probe)[0]['exact'] === true, 'The layout restored after the guard cases answers again');
 
     $proxy->failShardReserve = true;
     try {
@@ -493,20 +517,32 @@ try {
         $assert($meta['live'] === 's1' && $meta['building'] === null, "A reserve refusing $case records no build");
     }
 
-    // A full NONSCALING filter refuses the rest of a batch; the add fails instead of dropping them.
-    $sharded->reserve('full', str_repeat('u', 64), 10, 0.01, 1);
-    $fullTokens = [];
-    for ($i = 0; $i < 30; ++$i) { $fullTokens[] = $token('E', 'full-' . $i); }
-    try {
-        $sharded->add('full', [['id' => '1', 'type' => 'domain', 'tokens' => $fullTokens]]);
-        $assert(false, 'A full filter must fail the add');
-    } catch (FastLookupIndexUnavailableException $e) {
-        $assert(!$e instanceof FastLookupIndexCorruptException, 'A full filter is not corruption');
+    // A full NONSCALING shard refuses tokens: the add fails as full, and nothing it took before reads absent.
+    $tiny = new FastLookupFilter($shardedNamespace, $scope, $proxy, 8);
+    $tiny->reserve('full', str_repeat('u', 64), 40, 0.01, 1);
+    $fullShards = $tiny->metadata()['generations']['full']['shards'];
+    $assert($fullShards > 1, "The tiny filter is sharded: $fullShards");
+    $accepted = [];
+    $full = null;
+    for ($i = 0; $i < 1000 && $full === null; ++$i) {
+        $t = $token('E', 'full-' . $i);
+        try {
+            $tiny->add('full', [['id' => (string)($i + 1), 'type' => 'domain', 'tokens' => [$t]]]);
+            $accepted[] = $t;
+        } catch (FastLookupIndexUnavailableException $e) {
+            $full = $e;
+        }
     }
-    $fullInserted = $sharded->metadata()['generations']['full']['inserted'];
-    $assert($fullInserted >= 1 && $fullInserted <= 10, "The tokens stored before the refusal are counted: $fullInserted");
-    $assert($redis->rawCommand('BF.EXISTS', $shardedPrefix . 'g:full:bf:0', $fullTokens[0]) === 1, 'The tokens before the refusal are stored');
-    foreach (array_chunk($keys($shardedPrefix . 'g:full:*'), 500) as $batch) { $redis->del($batch); }
+    $assert($full instanceof FastLookupIndexFullException && $full->generation === 'full', 'A full shard fails the add as full: ' . ($full ? get_class($full) . ' ' . $full->getMessage() : 'never full'));
+    $assert(!$full instanceof FastLookupIndexCorruptException, 'A full filter is not corruption');
+    $fullInserted = $tiny->metadata()['generations']['full']['inserted'];
+    $assert($fullInserted >= 1 && $fullInserted <= count($accepted) + 1, "The tokens stored before the refusal are counted: $fullInserted");
+    $tiny->checkpoint('full-r1', false);
+    $tiny->activate('full', str_repeat('u', 64));
+    $tiny->checkpoint('full-r2', true);
+    $plan = array_map(static function ($t) { return [['token' => $t, 'kind' => 'exact']]; }, $accepted);
+    $absent = array_filter($tiny->candidates('full', $plan), static function ($row) { return !$row['exact']; });
+    $assert(count($accepted) > 0 && !$absent, 'No token taken before the refusal reads absent: ' . count($absent) . ' of ' . count($accepted));
 
     // Default shards keep a large filter under valkey-bloom's 128 MiB object limit.
     $big = new FastLookupFilter($bigNamespace, $scope, $proxy);
