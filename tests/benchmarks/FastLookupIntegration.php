@@ -442,8 +442,9 @@ do {
 } while ($cursor !== 0);
 $shardIndexes = [];
 foreach ($filterKeys as $key) {
-    $shardIndexes[] = fastLookupIsFilterKey(substr($key, strlen($namespace)))
-        ? (substr_count($key, ':') === 2 ? -1 : (int)substr($key, strrpos($key, ':') + 1)) : null;
+    $rest = substr($key, strlen($namespace));
+    $shardIndexes[] = fastLookupIsFilterKey($rest)
+        ? (substr_count($rest, ':') === 2 ? -1 : (int)substr($rest, strrpos($rest, ':') + 1)) : null;
 }
 sort($shardIndexes);
 same(true, $shardIndexes === [-1] || ($shardIndexes !== [] && $shardIndexes === range(0, count($shardIndexes) - 1)),
