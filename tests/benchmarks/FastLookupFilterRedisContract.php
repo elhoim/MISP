@@ -84,7 +84,7 @@ $query = [7 => [['token' => $exact, 'kind' => 'exact']], 11 => [['token' => $dom
     13 => [['token' => $range, 'kind' => 'ip_range']], 17 => [['token' => $token('E', 'absent.example'), 'kind' => 'exact']]];
 
 try {
-    $assert($filter->moduleAvailable() && $filter->moduleState() === 'available', 'RedisBloom is detected');
+    $assert($filter->moduleAvailable() && $filter->moduleState() === 'available', 'A Bloom module is detected');
     $proxy->noModule = true;
     $assert(!$filter->moduleAvailable() && $filter->moduleState() === 'missing', 'A missing RedisBloom module is detected');
     $proxy->noModule = false;
@@ -99,7 +99,9 @@ try {
     $assert($meta['live'] === null && $meta['building'] === 'first' && $meta['ready'] === false, 'Reserve creates a building generation');
     $assert($redis->hGet($prefix . 'metadata', 'schema') === 'bloom-2', 'A reset namespace carries the current schema');
     $assert($meta['generations']['first']['capacity'] === 1000 && $meta['generations']['first']['buckets'] === 2, 'Generation state records sizing');
-    $assert($redis->eval("return redis.call('TYPE', KEYS[1]).ok", [$prefix . 'g:first:bf'], 1) === FastLookupFilter::BLOOM_TYPE, 'The filter is a RedisBloom filter');
+    $bloomType = $redis->eval("return redis.call('TYPE', KEYS[1]).ok", [$prefix . 'g:first:bf'], 1);
+    $assert(in_array($bloomType, FastLookupFilter::BLOOM_TYPES, true), 'The filter is a RedisBloom or valkey-bloom filter: ' . $bloomType);
+    $assert($redis->hGet($prefix . 'g:first:info', 'bloom_type') === $bloomType, 'The generation records its filter type');
     $throws(static function () use ($filter) { $filter->reserve('first', str_repeat('a', 64), 1000, 0.001, 128); }, FastLookupIndexUnavailableException::class, 'A generation is reserved once');
 
     $filter->add('first', [
@@ -242,6 +244,31 @@ try {
     $throws(static function () use ($filter, $exact) { $filter->candidates('fifth', [[['token' => $exact, 'kind' => 'exact']]]); }, FastLookupIndexUnavailableException::class, 'Unavailable BF commands fail closed');
     $proxy->noBloomCommands = false;
 
+    // Either module's filter type is served, and a generation's recorded type is enforced.
+    $fifthInfo = $prefix . 'g:fifth:info';
+    $fifthFilter = $prefix . 'g:fifth:bf';
+    $recorded = $redis->hGet($fifthInfo, 'bloom_type');
+    $assert(in_array($recorded, FastLookupFilter::BLOOM_TYPES, true), 'The live generation records an allowed type');
+    $other = array_values(array_diff(FastLookupFilter::BLOOM_TYPES, [$recorded]))[0];
+    $lookupFifth = static function () use ($filter, $exact) {
+        return $filter->candidates('fifth', [[['token' => $exact, 'kind' => 'exact']]])[0]['exact'];
+    };
+    foreach (['the other module' => $other, 'a plain string' => 'string'] as $case => $foreign) {
+        $redis->hSet($fifthInfo, 'bloom_type', $foreign);
+        $throws(static function () use ($filter) { $filter->metadata(); }, FastLookupIndexCorruptException::class, "A recorded type of $case fails closed");
+        $throws($lookupFifth, FastLookupIndexUnavailableException::class, "A recorded type of $case never answers");
+    }
+    $redis->hSet($fifthInfo, 'bloom_type', $recorded);
+    $saved = $redis->dump($fifthFilter);
+    $redis->del($fifthFilter);
+    $redis->set($fifthFilter, 'x');
+    $throws(static function () use ($filter) { $filter->metadata(); }, FastLookupIndexCorruptException::class, 'A string in place of the filter fails closed');
+    $throws(static function () use ($filter, $exact) { $filter->add('fifth', [['id' => '2', 'type' => 'domain', 'tokens' => [$exact]]]); }, FastLookupIndexCorruptException::class, 'add() refuses a string in place of the filter');
+    $redis->del($fifthFilter);
+    $redis->restore($fifthFilter, 0, $saved);
+    $redis->hDel($fifthInfo, 'bloom_type');
+    $assert($lookupFifth() === true, 'A generation built before types were recorded is served');
+
     // A transient Redis error during reserve() never resets the namespace or deletes the live generation.
     $transient = static function ($method, $message) use ($filter, $proxy, $redis, $prefix, $assert, $exact) {
         $proxy->failNext = [$method => $message];
@@ -339,7 +366,9 @@ try {
     }
     $throws(static function () use ($filter) { $filter->prefixLengths('ninth'); }, FastLookupIndexCorruptException::class, 'A missing generation has no prefix state');
 
-    echo json_encode(['assertions' => $assertions, 'redis_version' => $redis->info('server')['redis_version'], 'status' => 'passed'], JSON_PRETTY_PRINT), "\n";
+    $server = $redis->info('server');
+    echo json_encode(['assertions' => $assertions, 'backend' => isset($server['valkey_version']) ? 'valkey' : 'redis',
+        'version' => $server['valkey_version'] ?? $server['redis_version'], 'status' => 'passed'], JSON_PRETTY_PRINT), "\n";
 } finally {
     foreach (array_chunk(array_merge($keys($prefix . '*'), $keys($legacy . '*')), 500) as $batch) { $redis->del($batch); }
 }

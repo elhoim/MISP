@@ -590,13 +590,14 @@ class FastLookupFilterTest extends TestCase
         }
     }
 
-    /** Answers every eval() with $reply. */
+    /** Answers every eval() with $reply and records its scripts. */
     private function evalRedis($reply)
     {
         return new class($reply) {
+            public $scripts = [];
             private $reply;
             public function __construct($reply) { $this->reply = $reply; }
-            public function eval($script, $args, $keys) { return $this->reply; }
+            public function eval($script, $args, $keys) { $this->scripts[] = $script; return $this->reply; }
             public function clearLastError() { return true; }
             public function getLastError() { return null; }
         };
@@ -627,6 +628,52 @@ class FastLookupFilterTest extends TestCase
             'non-decimal version' => [[str_repeat('0', 33), str_repeat('0', 129), 'x']],
             'missing version' => [[str_repeat('0', 33), str_repeat('0', 129), false]],
         ];
+    }
+
+    // -- Bloom filter types ----------------------------------------------------
+
+    public function testRedisBloomAndValkeyBloomTypesAreAllowed(): void
+    {
+        $this->assertSame(['MBbloom--', 'bloomfltr'], FastLookupFilter::BLOOM_TYPES);
+        foreach (FastLookupFilter::BLOOM_TYPES as $type) {
+            $this->assertTrue(FastLookupFilter::bloomTypeAllowed($type), $type);
+        }
+        foreach (['string', 'hash', '', 'mbbloom--', 'MBbloom-- ', false, null, 1] as $type) {
+            $this->assertFalse(FastLookupFilter::bloomTypeAllowed($type), var_export($type, true));
+        }
+    }
+
+    public function testGuardAcceptsEitherTypeAndEnforcesTheRecordedOne(): void
+    {
+        $redis = $this->evalRedis([false, false, false]);
+        $this->filter(null, $redis)->prefixLengths('generation');
+        $this->assertStringContainsString("local BLOOM_TYPES = {['MBbloom--'] = true, ['bloomfltr'] = true}", $redis->scripts[0]);
+        $this->assertStringContainsString('(bloomType and found ~= bloomType)', $redis->scripts[0]);
+    }
+
+    public function testReserveRecordsTheFilterTypeAndRefusesAnyOther(): void
+    {
+        $calls = $this->reserveCalls(['hGetAll' => $this->validMetadataFields()]);
+        $reserve = array_values(array_filter($calls, function ($call) {
+            return $call[0] === 'eval' && strpos($call[1][0], 'BF.RESERVE') !== false;
+        }));
+        $script = $reserve[0][1][0];
+        $this->assertStringContainsString("local BLOOM_TYPES = {['MBbloom--'] = true, ['bloomfltr'] = true}", $script);
+        $this->assertStringContainsString("'bloom_type', bloomType", $script);
+        $this->assertStringContainsString("redis.error_reply('unsupported Bloom filter type')", $script);
+    }
+
+    public function testUnsupportedFilterTypeAtReserveIsNotCorruption(): void
+    {
+        $redis = $this->recordingRedis(['hGetAll' => $this->validMetadataFields(), 'eval' => false,
+            'getLastError' => 'unsupported Bloom filter type']);
+        try {
+            $this->filter(null, $redis)->reserve('next', 'fingerprint', 1000, 0.001, 1);
+            $this->fail('An unsupported filter type must fail the reserve.');
+        } catch (FastLookupIndexUnavailableException $e) {
+            $this->assertNotInstanceOf(FastLookupIndexCorruptException::class, $e);
+        }
+        $this->assertNotContains('scan', $redis->calls, 'Nothing is reclaimed after a refused reserve.');
     }
 
     public function testScopeDisagreeingWithConfigurationFailsClosed(): void

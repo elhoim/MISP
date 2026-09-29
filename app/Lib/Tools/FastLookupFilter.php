@@ -21,8 +21,9 @@ class FastLookupPrefixesChangedException extends FastLookupIndexUnavailableExcep
 }
 
 /**
- * Redis side of fast lookup: one RedisBloom filter per generation holding every
- * token, plus append-only postings for IP-range and domain tokens.
+ * Redis side of fast lookup: one Bloom filter (RedisBloom or valkey-bloom) per
+ * generation holding every token, plus append-only postings for IP-range and
+ * domain tokens.
  *
  * The filter only proves absence. SQL answers exact tokens that may be present;
  * range and domain tokens read postings whose attribute IDs SQL re-verifies.
@@ -46,7 +47,8 @@ class FastLookupFilter
     const LEGACY_SCHEMA = 'bloom-1';
     const PREFIX = 'misp:fast_lookup:bf1:';
     const LEGACY_PREFIX = 'misp:fast_lookup:v3:';
-    const BLOOM_TYPE = 'MBbloom--';
+    /** The TYPE of a RedisBloom and of a valkey-bloom filter. */
+    const BLOOM_TYPES = ['MBbloom--', 'bloomfltr'];
     const TOKEN_BYTES = 9;
     const MIN_CAPACITY = 1000000;
     const BUCKET_FIELDS = 64;
@@ -101,6 +103,11 @@ class FastLookupFilter
         $hashes = (int)ceil(-log($rate) / log(2));
         $bits = -log($rate) / (log(2) ** 2) * max(1, $capacity);
         return (1 - exp(-$hashes * $inserted / $bits)) ** $hashes;
+    }
+
+    public static function bloomTypeAllowed($type): bool
+    {
+        return is_string($type) && in_array($type, self::BLOOM_TYPES, true);
     }
 
     public function moduleAvailable(): bool
@@ -197,12 +204,17 @@ class FastLookupFilter
                 'fingerprint' => '', 'building_fingerprint' => '', 'revision' => '0', 'ready' => '0',
                 'scope' => json_encode($this->scope, JSON_THROW_ON_ERROR)]]);
         }
-        $this->evaluate(<<<'LUA'
+        $this->evaluate($this->bloomTypesScript() . <<<'LUA'
 if redis.call('HGET', KEYS[1], 'live') == ARGV[1] then return redis.error_reply('a rebuild must use a fresh generation') end
 if redis.call('EXISTS', KEYS[2]) ~= 0 or redis.call('EXISTS', KEYS[3]) ~= 0 then return redis.error_reply('generation keys already exist') end
 redis.call('BF.RESERVE', KEYS[3], ARGV[4], ARGV[3], 'NONSCALING')
+local bloomType = redis.call('TYPE', KEYS[3]).ok
+if not BLOOM_TYPES[bloomType] then
+    redis.call('DEL', KEYS[3])
+    return redis.error_reply('unsupported Bloom filter type')
+end
 redis.call('HSET', KEYS[2], '!', ARGV[1], 'capacity', ARGV[3], 'rate', ARGV[4], 'inserted', '0', 'stale', '0', 'buckets', ARGV[5], 'cursor', '0',
-    'p4', string.rep('0', 33), 'p6', string.rep('0', 129), 'pv', '0')
+    'bloom_type', bloomType, 'p4', string.rep('0', 33), 'p6', string.rep('0', 129), 'pv', '0')
 redis.call('HSET', KEYS[1], 'building', ARGV[1], 'building_fingerprint', ARGV[2], 'schema', ARGV[6])
 return 1
 LUA
@@ -833,20 +845,31 @@ LUA;
     /**
      * The one fail-closed generation guard: BF.MEXISTS reports absence for a
      * missing key and BF.MADD creates a default filter, so every script checks
-     * the state sentinel and the filter's type first. Returns an error reply,
-     * or nil when the generation is intact.
+     * the state sentinel and the filter's type first. A generation that
+     * recorded its type must keep it. Returns an error reply, or nil when the
+     * generation is intact.
      */
     private function guardScript(): string
     {
-        return "local BLOOM_TYPE = '" . self::BLOOM_TYPE . "'\n" . <<<'LUA'
+        return $this->bloomTypesScript() . <<<'LUA'
 local function requireGeneration(infoKey, bloomKey, generation)
-    if redis.call('HGET', infoKey, '!') ~= generation then return redis.error_reply('missing generation state') end
-    if redis.call('EXISTS', bloomKey) ~= 1 or redis.call('TYPE', bloomKey).ok ~= BLOOM_TYPE then return redis.error_reply('missing Bloom filter') end
+    local state = redis.call('HMGET', infoKey, '!', 'bloom_type')
+    if state[1] ~= generation then return redis.error_reply('missing generation state') end
+    if redis.call('EXISTS', bloomKey) ~= 1 then return redis.error_reply('missing Bloom filter') end
+    local found, bloomType = redis.call('TYPE', bloomKey).ok, state[2]
+    if not BLOOM_TYPES[found] or (bloomType and found ~= bloomType) then return redis.error_reply('missing Bloom filter') end
     return nil
 end
 
 LUA;
     }
+
+    private function bloomTypesScript(): string
+    {
+        $entries = array_map(static function ($type) { return "['" . $type . "'] = true"; }, self::BLOOM_TYPES);
+        return 'local BLOOM_TYPES = {' . implode(', ', $entries) . "}\n";
+    }
+
     private function postingScript(): string
     {
         return "local MAX_BYTES = " . self::MAX_POSTING_BYTES
