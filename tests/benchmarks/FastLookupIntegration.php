@@ -45,6 +45,7 @@ App::build(['Model' => [APP . 'Model/'], 'Model/Behavior' => [APP . 'Model/Behav
 App::uses('MispAttribute', 'Model');
 App::uses('ConnectionManager', 'Model');
 App::uses('RedisTool', 'Tools');
+require_once __DIR__ . '/FastLookupBackend.php';
 App::uses('FastLookupConfig', 'Tools');
 App::uses('FastLookupIndexManager', 'Tools');
 App::uses('FastLookupFilter', 'Tools');
@@ -437,9 +438,9 @@ same('ready', manager()->status()['status'], 'matching checkpoint restored');
 $filterKeys = [];
 $cursor = null;
 do {
-    foreach ($redis->scan($cursor, $namespace . 'g:*:bf', 1000) ?: [] as $key) { $filterKeys[] = $key; }
+    foreach ($redis->scan($cursor, $namespace . 'g:*:bf*', 1000) ?: [] as $key) { $filterKeys[] = $key; }
 } while ($cursor !== 0);
-same(1, count($filterKeys), 'one live Bloom filter exists');
+same(true, count($filterKeys) >= 1, 'the live Bloom filter exists');
 $redis->del($filterKeys);
 $missing = lookup($user, ['shared']);
 same(false, $missing['status'] === 'ready', 'missing filter refuses result completeness');
@@ -508,7 +509,7 @@ same(json_encode($single['results']), json_encode(lookup($user, ['example.org', 
 // Flush the test's deferred callback before database cleanup occurs at shutdown.
 FastLookupIndexManager::dispatchPending();
 $report = ['checks' => $checks, 'versions' => ['php' => PHP_VERSION,
-    'mariadb' => $pdo->query('SELECT VERSION()')->fetchColumn(), 'redis' => $redis->info('server')['redis_version']],
+    'mariadb' => $pdo->query('SELECT VERSION()')->fetchColumn()] + fastLookupBackendVersions($redis),
     'fixture_attribute_rows' => (int)$pdo->query('SELECT COUNT(*) FROM attributes')->fetchColumn(),
     'default_max_values' => 10000, 'query_counts' => $queryMeasurements, 'benchmarks' => $benchmarks, 'statistics' => $metrics,
     'limitations' => ['Direct model invocation, not HTTP authentication/rate limiting.',

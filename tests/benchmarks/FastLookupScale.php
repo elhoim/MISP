@@ -59,6 +59,7 @@ App::build(['Model' => [APP . 'Model/'], 'Model/Behavior' => [APP . 'Model/Behav
 App::uses('MispAttribute', 'Model');
 App::uses('ConnectionManager', 'Model');
 App::uses('RedisTool', 'Tools');
+require_once __DIR__ . '/FastLookupBackend.php';
 App::uses('FastLookupConfig', 'Tools');
 App::uses('FastLookupIndexManager', 'Tools');
 App::uses('FastLookupFilter', 'Tools');
@@ -332,8 +333,14 @@ do {
     $keys = $redis->scan($cursor, $namespace . '*', 1000) ?: [];
     foreach ($keys as $key) {
         $rest = substr($key, strlen($namespace));
-        if (preg_match('/^g:[^:]+:(bf|info|x:\d+:[0-9a-f]+|x:\d+)$/', $rest, $m)) {
-            $class = ['bf' => 'bloom_filter', 'info' => 'global'][$m[1]] ?? (substr_count($m[1], ':') === 2 ? 'overflow_postings' : 'postings');
+        if (preg_match('/^g:[^:]+:(bf(?::\d+)?|info|x:\d+:[0-9a-f]+|x:\d+)$/', $rest, $m)) {
+            if (strpos($m[1], 'bf') === 0) {
+                $class = 'bloom_filter';
+            } elseif ($m[1] === 'info') {
+                $class = 'global';
+            } else {
+                $class = substr_count($m[1], ':') === 2 ? 'overflow_postings' : 'postings';
+            }
         } else {
             $class = 'global';
         }
@@ -473,8 +480,7 @@ foreach (array_chunk($absent, AttributeFastLookupTool::BATCH_SIZE, true) as $bat
 }
 $report['measured_false_positive_rate'] = $positives / count($absent);
 $report['versions'] = ['php' => PHP_VERSION, 'mariadb' => $pdo->query('SELECT VERSION()')->fetchColumn(),
-    'redis' => $redis->info('server')['redis_version'],
-    'hash_max_listpack' => $redis->config('GET', 'hash-max-listpack-*')];
+    'hash_max_listpack' => $redis->config('GET', 'hash-max-listpack-*')] + fastLookupBackendVersions($redis);
 $json = json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 if (getenv('FL_OUT')) { file_put_contents(getenv('FL_OUT'), $json); }
 echo $json, "\n";
