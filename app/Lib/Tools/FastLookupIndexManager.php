@@ -269,6 +269,8 @@ class FastLookupIndexManager
             $state = $this->readState(true);
             if ($state && !empty($state['build']['error'])) {
                 $state['build']['error'] = null;
+                // An operator's resume earns a fresh set of automatic restarts.
+                $state['build']['full_restarts'] = 0;
                 $this->writeState($state);
             }
             $this->connection->commit();
@@ -741,7 +743,11 @@ class FastLookupIndexManager
     {
         try {
             $metadata = $this->filter()->metadata();
+        } catch (FastLookupIndexCorruptException $e) {
+            // Redis answered: there is no index to serve.
+            return null;
         } catch (Throwable $e) {
+            $this->attribute->log('Could not read the live fast lookup generation; the rebuild is sized from the attribute count alone.', LOG_WARNING);
             return null;
         }
         $live = $metadata['live'] ?? null;

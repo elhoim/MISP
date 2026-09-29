@@ -549,6 +549,44 @@ class FastLookupIndexManagerTest extends TestCase
         $this->assertSame(16 * $capacity, end($this->filter->reserved)['capacity']);
     }
 
+    public function testResumeEarnsAFreshSetOfAutomaticRestarts()
+    {
+        $this->fillableFilter();
+        $this->seed();
+        $manager = $this->manager();
+        $this->filter->needs = PHP_INT_MAX;
+        $manager->startRebuild();
+        $this->settle($manager);
+        $this->assertCount(4, $this->filter->reserved);
+        $this->assertSame(FastLookupIndexManager::BUILD_FAILED, $this->sqlState()['build']['error']);
+        $manager->resume();
+        $this->assertSame(0, $this->sqlState()['build']['full_restarts']);
+        $this->settle($manager);
+        $this->assertCount(8, $this->filter->reserved, 'The resumed build restarts three more times by itself.');
+        $this->assertSame(6, $this->warnings('restarts at twice the capacity'));
+        $this->assertSame(FastLookupIndexManager::BUILD_FAILED, $this->sqlState()['build']['error']);
+    }
+
+    public function testUnreadableLiveGenerationSizesFromTheFormulaWithAWarning()
+    {
+        $this->fillableFilter();
+        $this->seed();
+        $manager = $this->manager();
+        $manager->startRebuild();
+        $this->settle($manager);
+        $this->assertSame(0, $this->warnings('Could not read the live'), 'No index yet is no failure.');
+        $this->filter->failMetadataTransport = true;
+        try {
+            $manager->startRebuild();
+        } catch (Throwable $e) {
+            // The rebuild itself needs Redis too.
+        }
+        $this->assertSame(1, $this->warnings('Could not read the live'));
+        $this->filter->failMetadataTransport = false;
+        $manager->startRebuild();
+        $this->assertSame(FastLookupIndexManager::MIN_CAPACITY, end($this->filter->reserved)['capacity']);
+    }
+
     public function testAutomaticRestartsStartOverOnceABuildActivates()
     {
         $this->fillableFilter();
