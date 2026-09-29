@@ -61,10 +61,89 @@ class FastLookupFilter
     const READ_BATCH_SIZE = 1024;
     const DELETE_BATCH = 500;
 
+    const BLOOM_CANDIDATES = <<<'LUA'
+if redis.call('HGET', KEYS[1], 'live') ~= ARGV[1] or redis.call('HGET', KEYS[1], 'ready') ~= '1' then return redis.error_reply('index changed') end
+local failure = requireGeneration(KEYS[2], 3, ARGV[1])
+if failure then return failure end
+if ARGV[3] ~= '-' and (redis.call('HGET', KEYS[2], 'pv') or '') ~= ARGV[3] then return {2} end
+local tokens = {}
+for i = 5, #ARGV, 2 do tokens[#tokens + 1] = ARGV[i] end
+local present = redis.call('BF.MEXISTS', KEYS[3], unpack(tokens))
+local bytes, result = 0, {}
+for n, flag in ipairs(present) do
+    local keyIndex, token = tonumber(ARGV[2 + 2 * n]), ARGV[3 + 2 * n]
+    if flag ~= 1 then
+        result[n] = false
+    elseif keyIndex == 0 then
+        result[n] = '1'
+    else
+        local bucket = KEYS[keyIndex]
+        if redis.call('HGET', bucket, '!') ~= ARGV[1] then return redis.error_reply('missing posting bucket') end
+        local raw = readPosting(bucket, bucket .. ':' .. hex(token), token, ARGV[1])
+        bytes = bytes + #raw
+        if bytes > tonumber(ARGV[2]) then return {0} end
+        result[n] = raw
+    end
+end
+return {1, result}
+LUA;
+    const BITMAP_CANDIDATES = <<<'LUA'
+if redis.call('HGET', KEYS[1], 'live') ~= ARGV[1] or redis.call('HGET', KEYS[1], 'ready') ~= '1' then return redis.error_reply('index changed') end
+local failure, shards = requireGeneration(KEYS[2], 3, ARGV[1])
+if failure then return failure end
+if ARGV[3] ~= '-' and (redis.call('HGET', KEYS[2], 'pv') or '') ~= ARGV[3] then return {2} end
+local k = tonumber(ARGV[4])
+local stride = 2 + 2 * k
+local offsets, owners, missing, count = {}, {}, {}, 0
+for i = 5, #ARGV, stride do
+    count = count + 1
+    for j = i + 2, i + stride - 1, 2 do
+        local shard = tonumber(ARGV[j])
+        if shard >= shards then return redis.error_reply('malformed filter request') end
+        if not offsets[shard] then offsets[shard], owners[shard] = {}, {} end
+        offsets[shard][#offsets[shard] + 1] = ARGV[j + 1]
+        owners[shard][#owners[shard] + 1] = count
+    end
+end
+for shard, list in pairs(offsets) do
+    for s = 1, #list, 1000 do
+        local ops = {}
+        for j = s, math.min(s + 999, #list) do
+            ops[#ops + 1] = 'GET'; ops[#ops + 1] = 'u1'; ops[#ops + 1] = list[j]
+        end
+        local bits = redis.call('BITFIELD_RO', KEYS[3 + shard], unpack(ops))
+        for j, bit in ipairs(bits) do
+            if bit == 0 then missing[owners[shard][s + j - 1]] = true end
+        end
+    end
+end
+local bytes, result = 0, {}
+for n = 1, count do
+    local at = 5 + (n - 1) * stride
+    local keyIndex, token = tonumber(ARGV[at]), ARGV[at + 1]
+    if missing[n] then
+        result[n] = false
+    elseif keyIndex == 0 then
+        result[n] = '1'
+    else
+        local bucket = KEYS[keyIndex]
+        if redis.call('HGET', bucket, '!') ~= ARGV[1] then return redis.error_reply('missing posting bucket') end
+        local raw = readPosting(bucket, bucket .. ':' .. hex(token), token, ARGV[1])
+        bytes = bytes + #raw
+        if bytes > tonumber(ARGV[2]) then return {0} end
+        result[n] = raw
+    end
+end
+return {1, result}
+LUA;
+
     private $prefix;
     private $legacyPrefix;
     private $scope;
     private $redis;
+    /** A module-free bitmap Bloom filter in place of the BF.* commands. */
+    private $bitmap;
+    public static $bitmapShardBits = 536870912;
 
     public function __construct(string $namespace, array $scope, $redis = null)
     {
@@ -88,6 +167,7 @@ class FastLookupFilter
         $this->prefix = self::PREFIX . $hash . ':';
         $this->legacyPrefix = self::LEGACY_PREFIX . $hash . ':';
         $this->redis = $redis;
+        $this->bitmap = getenv('MISP_FASTLOOKUP_FILTER') === 'bitmap';
     }
 
     public static function bucketsFor(int $entries): int
@@ -103,6 +183,30 @@ class FastLookupFilter
         return (1 - exp(-$hashes * $inserted / $bits)) ** $hashes;
     }
 
+    public static function bitmapBits(int $capacity, float $rate): int
+    {
+        return (int)ceil(max(1, $capacity) * -log($rate) / (log(2) ** 2));
+    }
+
+    public static function bitmapHashes(float $rate): int
+    {
+        return max(1, (int)round(-log($rate, 2)));
+    }
+
+    /** Flat [shard, offset, ...] by double hashing: h1 = digest bytes 0-3, h2 = bytes 4-7 | 1. */
+    public static function bitmapPositions(string $token, int $bits, int $hashes): array
+    {
+        $h1 = unpack('N', $token, 1)[1];
+        $h2 = unpack('N', $token, 5)[1] | 1;
+        $pairs = [];
+        for ($i = 0; $i < $hashes; ++$i) {
+            $position = ($h1 + $i * $h2) % $bits;
+            $pairs[] = intdiv($position, self::$bitmapShardBits);
+            $pairs[] = $position % self::$bitmapShardBits;
+        }
+        return $pairs;
+    }
+
     public function moduleAvailable(): bool
     {
         return $this->moduleState() === 'available';
@@ -114,6 +218,10 @@ class FastLookupFilter
      */
     public function moduleState(): string
     {
+        if ($this->bitmap) {
+            try { $this->connection()->rawCommand('PING'); } catch (Throwable $e) { return 'unreachable'; }
+            return 'available';
+        }
         try {
             $info = $this->connection()->rawCommand('COMMAND', 'INFO', 'BF.MEXISTS');
         } catch (Throwable $e) {
@@ -197,7 +305,9 @@ class FastLookupFilter
                 'fingerprint' => '', 'building_fingerprint' => '', 'revision' => '0', 'ready' => '0',
                 'scope' => json_encode($this->scope, JSON_THROW_ON_ERROR)]]);
         }
-        $this->evaluate(<<<'LUA'
+        $rateString = rtrim(sprintf('%.10F', $rate), '0');
+        if (!$this->bitmap) {
+            $this->evaluate(<<<'LUA'
 if redis.call('HGET', KEYS[1], 'live') == ARGV[1] then return redis.error_reply('a rebuild must use a fresh generation') end
 if redis.call('EXISTS', KEYS[2]) ~= 0 or redis.call('EXISTS', KEYS[3]) ~= 0 then return redis.error_reply('generation keys already exist') end
 redis.call('BF.RESERVE', KEYS[3], ARGV[4], ARGV[3], 'NONSCALING')
@@ -206,8 +316,29 @@ redis.call('HSET', KEYS[2], '!', ARGV[1], 'capacity', ARGV[3], 'rate', ARGV[4], 
 redis.call('HSET', KEYS[1], 'building', ARGV[1], 'building_fingerprint', ARGV[2], 'schema', ARGV[6])
 return 1
 LUA
-            , [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)],
-            [$generation, $fingerprint, (string)$capacity, rtrim(sprintf('%.10F', $rate), '0'), (string)$buckets, self::SCHEMA]);
+                , [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)],
+                [$generation, $fingerprint, (string)$capacity, $rateString, (string)$buckets, self::SCHEMA]);
+        } else {
+            $bits = self::bitmapBits($capacity, $rate);
+            $this->evaluate(<<<'LUA'
+if redis.call('HGET', KEYS[1], 'live') == ARGV[1] then return redis.error_reply('a rebuild must use a fresh generation') end
+for i = 2, #KEYS do
+    if redis.call('EXISTS', KEYS[i]) ~= 0 then return redis.error_reply('generation keys already exist') end
+end
+local bits, shardBits = tonumber(ARGV[7]), tonumber(ARGV[9])
+for i = 3, #KEYS do
+    local size = math.ceil(math.min(shardBits, bits - (i - 3) * shardBits) / 8)
+    redis.call('SETRANGE', KEYS[i], size - 1, string.char(0))
+end
+redis.call('HSET', KEYS[2], '!', ARGV[1], 'capacity', ARGV[3], 'rate', ARGV[4], 'inserted', '0', 'stale', '0', 'buckets', ARGV[5], 'cursor', '0',
+    'bm_bits', ARGV[7], 'bm_hashes', ARGV[8], 'p4', string.rep('0', 33), 'p6', string.rep('0', 129), 'pv', '0')
+redis.call('HSET', KEYS[1], 'building', ARGV[1], 'building_fingerprint', ARGV[2], 'schema', ARGV[6])
+return 1
+LUA
+                , array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation, $bits)),
+                [$generation, $fingerprint, (string)$capacity, $rateString, (string)$buckets, self::SCHEMA,
+                    (string)$bits, (string)self::bitmapHashes($rate), (string)self::$bitmapShardBits]);
+        }
         $keys = [];
         for ($i = 0; $i < $buckets; ++$i) {
             $keys[] = $this->generationPrefix($generation) . 'x:' . $i;
@@ -254,7 +385,8 @@ LUA
                 $lengths[$network[0]][$network[1]] = true;
             }
         }
-        $fence = [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)];
+        $layout = $this->bitmap ? $this->bitmapLayout($generation) : null;
+        $fence = array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation, $layout[0] ?? null));
         // Before any token of this call is visible: a range token's length must always be in the mask.
         if ($lengths[4] || $lengths[6]) {
             $this->evaluate($this->fenceScript() . <<<'LUA'
@@ -281,15 +413,39 @@ return 1
 LUA
                 , $fence, [$generation, implode(',', array_keys($lengths[4])), implode(',', array_keys($lengths[6]))]);
         }
-        foreach (array_chunk(array_map('strval', array_keys($tokens)), self::FILTER_BATCH) as $chunk) {
-            $this->evaluate($this->fenceScript() . <<<'LUA'
+        if (!$this->bitmap) {
+            foreach (array_chunk(array_map('strval', array_keys($tokens)), self::FILTER_BATCH) as $chunk) {
+                $this->evaluate($this->fenceScript() . <<<'LUA'
 local added = redis.call('BF.MADD', KEYS[3], unpack(ARGV, 2))
 local count = 0
 for _, flag in ipairs(added) do if flag == 1 then count = count + 1 end end
 redis.call('HINCRBY', KEYS[2], 'inserted', count)
 return count
 LUA
-                , $fence, array_merge([$generation], $chunk));
+                    , $fence, array_merge([$generation], $chunk));
+            }
+        } else {
+            [$bits, $hashes] = $layout;
+            foreach (array_chunk(array_map('strval', array_keys($tokens)), self::FILTER_BATCH) as $chunk) {
+                $args = [$generation, (string)$hashes];
+                foreach ($chunk as $token) { array_push($args, ...self::bitmapPositions($token, $bits, $hashes)); }
+                $this->evaluate($this->fenceScript() . <<<'LUA'
+local k, count, i = tonumber(ARGV[2]), 0, 3
+while i <= #ARGV do
+    local fresh = false
+    for j = i, i + 2 * k - 1, 2 do
+        local shard = tonumber(ARGV[j])
+        if shard >= SHARDS then return redis.error_reply('malformed filter request') end
+        if redis.call('SETBIT', KEYS[3 + shard], ARGV[j + 1], 1) == 0 then fresh = true end
+    end
+    if fresh then count = count + 1 end
+    i = i + 2 * k
+end
+redis.call('HINCRBY', KEYS[2], 'inserted', count)
+return count
+LUA
+                    , $fence, $args);
+            }
         }
         if (!$postings) {
             return;
@@ -338,7 +494,7 @@ LUA
         $this->identifier($generation);
         if ($count < 1) { return; }
         $this->evaluate($this->fenceScript() . "redis.call('HINCRBY', KEYS[2], 'stale', ARGV[2])\nreturn 1",
-            [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)], [$generation, (string)$count]);
+            array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation)), [$generation, (string)$count]);
     }
 
     public function setCursor(string $generation, string $cursor): void
@@ -346,7 +502,7 @@ LUA
         $this->identifier($generation);
         if ($cursor !== '0') { $this->decimalId($cursor); }
         $this->evaluate($this->fenceScript() . "redis.call('HSET', KEYS[2], 'cursor', ARGV[2])\nreturn 1",
-            [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)], [$generation, $cursor]);
+            array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation)), [$generation, $cursor]);
     }
 
     public function checkpoint(string $revision, bool $ready): void
@@ -371,7 +527,7 @@ if redis.call('HGET', KEYS[1], 'building') ~= ARGV[1] or redis.call('HGET', KEYS
 redis.call('HSET', KEYS[1], 'live', ARGV[1], 'fingerprint', ARGV[2], 'building', '', 'building_fingerprint', '', 'ready', '0')
 return 1
 LUA
-            , [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)], [$generation, $fingerprint]);
+            , array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation)), [$generation, $fingerprint]);
         $this->deleteGenerations([$generation]);
         $this->deleteMatching($this->legacyPrefix . '*', null);
     }
@@ -384,11 +540,11 @@ LUA
     {
         $this->identifier($generation);
         $reply = $this->evaluate($this->guardScript() . <<<'LUA'
-local failure = requireGeneration(KEYS[1], KEYS[2], ARGV[1])
+local failure = requireGeneration(KEYS[1], 2, ARGV[1])
 if failure then return failure end
 return redis.call('HMGET', KEYS[1], 'p4', 'p6', 'pv')
 LUA
-            , [$this->infoKey($generation), $this->bloomKey($generation)], [$generation]);
+            , array_merge([$this->infoKey($generation)], $this->filterKeys($generation)), [$generation]);
         if (!is_array($reply) || count($reply) !== 3) {
             throw new FastLookupIndexCorruptException('The fastLookup IP prefix state is corrupt.');
         }
@@ -440,39 +596,17 @@ LUA
         }
         $buckets = $before['generations'][$generation]['buckets'];
         $count = 0;
+        [$bits, $hashes] = $this->bitmap ? $this->bitmapLayout($generation) : [0, 0];
+        $filterKeys = $this->bitmap ? $this->filterKeys($generation, $bits) : [$this->bloomKey($generation)];
         foreach (array_chunk(array_map('strval', array_keys($plan)), self::READ_BATCH_SIZE) as $batch) {
-            $keys = [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)];
+            $keys = array_merge([$this->metaKey(), $this->infoKey($generation)], $filterKeys);
             $args = [$generation, (string)($maximumIds * 21), $prefixVersion ?? '-'];
+            if ($this->bitmap) { $args[] = (string)$hashes; }
             foreach ($batch as $token) {
                 array_push($args, $token[0] === 'E' ? 0 : $this->keyIndex($keys, $this->postingKey($generation, $token, $buckets)), $token);
+                if ($this->bitmap) { array_push($args, ...self::bitmapPositions($token, $bits, $hashes)); }
             }
-            $reply = $this->evaluate($this->guardScript() . $this->postingScript() . <<<'LUA'
-if redis.call('HGET', KEYS[1], 'live') ~= ARGV[1] or redis.call('HGET', KEYS[1], 'ready') ~= '1' then return redis.error_reply('index changed') end
-local failure = requireGeneration(KEYS[2], KEYS[3], ARGV[1])
-if failure then return failure end
-if ARGV[3] ~= '-' and (redis.call('HGET', KEYS[2], 'pv') or '') ~= ARGV[3] then return {2} end
-local tokens = {}
-for i = 5, #ARGV, 2 do tokens[#tokens + 1] = ARGV[i] end
-local present = redis.call('BF.MEXISTS', KEYS[3], unpack(tokens))
-local bytes, result = 0, {}
-for n, flag in ipairs(present) do
-    local keyIndex, token = tonumber(ARGV[2 + 2 * n]), ARGV[3 + 2 * n]
-    if flag ~= 1 then
-        result[n] = false
-    elseif keyIndex == 0 then
-        result[n] = '1'
-    else
-        local bucket = KEYS[keyIndex]
-        if redis.call('HGET', bucket, '!') ~= ARGV[1] then return redis.error_reply('missing posting bucket') end
-        local raw = readPosting(bucket, bucket .. ':' .. hex(token), token, ARGV[1])
-        bytes = bytes + #raw
-        if bytes > tonumber(ARGV[2]) then return {0} end
-        result[n] = raw
-    end
-end
-return {1, result}
-LUA
-                , $keys, $args);
+            $reply = $this->evaluate($this->guardScript() . $this->postingScript() . ($this->bitmap ? self::BITMAP_CANDIDATES : self::BLOOM_CANDIDATES), $keys, $args);
             if (!is_array($reply) || !isset($reply[0]) || !in_array($reply[0], [0, 1, 2], true)) {
                 throw new FastLookupIndexUnavailableException('Invalid fastLookup filter response.');
             }
@@ -529,7 +663,8 @@ LUA
         $info = $meta['generations'][$generation];
         $reason = null;
         $shared = $this->sumMemory($this->memory($this->metaKey(), $reason), $this->memory($this->infoKey($generation), $reason));
-        $filterBytes = $this->memory($this->bloomKey($generation), $reason);
+        $filterBytes = 0;
+        foreach ($this->filterKeys($generation) as $key) { $filterBytes = $this->sumMemory($filterBytes, $this->memory($key, $reason)); }
         $postingBytes = 0; $entries = 0;
         for ($i = 0; $i < $info['buckets']; ++$i) {
             $bucket = $this->generationPrefix($generation) . 'x:' . $i;
@@ -620,11 +755,11 @@ LUA
     private function generationInfo(string $generation): array
     {
         $reply = $this->evaluate($this->guardScript() . <<<'LUA'
-local failure = requireGeneration(KEYS[1], KEYS[2], ARGV[1])
+local failure = requireGeneration(KEYS[1], 2, ARGV[1])
 if failure then return failure end
 return redis.call('HMGET', KEYS[1], 'capacity', 'rate', 'inserted', 'stale', 'buckets', 'cursor', 'p4', 'p6', 'pv')
 LUA
-            , [$this->infoKey($generation), $this->bloomKey($generation)], [$generation]);
+            , array_merge([$this->infoKey($generation)], $this->filterKeys($generation)), [$generation]);
         if (!is_array($reply) || count($reply) !== 9) {
             throw new FastLookupIndexCorruptException('Invalid fastLookup generation state.');
         }
@@ -739,6 +874,34 @@ LUA
     private function generationPrefix($generation): string { return $this->prefix . 'g:' . $generation . ':'; }
     private function infoKey($generation): string { return $this->generationPrefix($generation) . 'info'; }
     private function bloomKey($generation): string { return $this->generationPrefix($generation) . 'bf'; }
+    /** The generation's filter keys: its BF key, or its bitmap shards. */
+    private function filterKeys(string $generation, ?int $bits = null): array
+    {
+        if (!$this->bitmap) {
+            return [$this->bloomKey($generation)];
+        }
+        $bits = $bits ?? $this->bitmapLayout($generation)[0];
+        $keys = [];
+        for ($i = 0, $n = intdiv($bits + self::$bitmapShardBits - 1, self::$bitmapShardBits); $i < $n; ++$i) {
+            $keys[] = $this->generationPrefix($generation) . 'bm:' . $i;
+        }
+        return $keys;
+    }
+
+    /** [bits, hashes] a bitmap generation records. */
+    private function bitmapLayout(string $generation): array
+    {
+        $state = $this->call('hMGet', [$this->infoKey($generation), ['!', 'bm_bits', 'bm_hashes']]);
+        if (!is_array($state)) {
+            throw new FastLookupIndexUnavailableException('Redis could not read the fastLookup generation state.');
+        }
+        $bits = (string)($state['bm_bits'] ?? '');
+        $hashes = (string)($state['bm_hashes'] ?? '');
+        if (($state['!'] ?? false) !== $generation || !ctype_digit($bits) || !ctype_digit($hashes) || (int)$bits < 1 || (int)$hashes < 1) {
+            throw new FastLookupIndexCorruptException('A fastLookup generation is missing.');
+        }
+        return [(int)$bits, (int)$hashes];
+    }
     private function postingKey($generation, string $token, int $buckets): string
     {
         return $this->generationPrefix($generation) . 'x:' . (unpack('N', $token, 1)[1] % $buckets);
@@ -825,7 +988,7 @@ LUA
     {
         return $this->guardScript() . <<<'LUA'
 if ARGV[1] ~= redis.call('HGET', KEYS[1], 'live') and ARGV[1] ~= redis.call('HGET', KEYS[1], 'building') then return redis.error_reply('generation changed') end
-local failure = requireGeneration(KEYS[2], KEYS[3], ARGV[1])
+local failure, SHARDS = requireGeneration(KEYS[2], 3, ARGV[1])
 if failure then return failure end
 
 LUA;
@@ -838,11 +1001,32 @@ LUA;
      */
     private function guardScript(): string
     {
+        if ($this->bitmap) {
+            return 'local SHARD_BITS = ' . self::$bitmapShardBits . "\n" . <<<'LUA'
+local function requireGeneration(infoKey, first, generation)
+    local state = redis.call('HMGET', infoKey, '!', 'bm_bits')
+    if state[1] ~= generation then return redis.error_reply('missing generation state') end
+    local bits = tonumber(state[2])
+    if not bits or bits < 1 then return redis.error_reply('missing Bloom filter') end
+    local base, shards = string.sub(infoKey, 1, -5) .. 'bm:', math.ceil(bits / SHARD_BITS)
+    for i = 0, shards - 1 do
+        local key = KEYS[first + i]
+        local size = math.ceil(math.min(SHARD_BITS, bits - i * SHARD_BITS) / 8)
+        if key ~= base .. i or redis.call('TYPE', key).ok ~= 'string' or redis.call('STRLEN', key) ~= size then
+            return redis.error_reply('missing Bloom filter')
+        end
+    end
+    return nil, shards
+end
+
+LUA;
+        }
         return "local BLOOM_TYPE = '" . self::BLOOM_TYPE . "'\n" . <<<'LUA'
-local function requireGeneration(infoKey, bloomKey, generation)
+local function requireGeneration(infoKey, first, generation)
     if redis.call('HGET', infoKey, '!') ~= generation then return redis.error_reply('missing generation state') end
+    local bloomKey = KEYS[first]
     if redis.call('EXISTS', bloomKey) ~= 1 or redis.call('TYPE', bloomKey).ok ~= BLOOM_TYPE then return redis.error_reply('missing Bloom filter') end
-    return nil
+    return nil, 1
 end
 
 LUA;
