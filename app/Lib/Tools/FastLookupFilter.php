@@ -22,8 +22,8 @@ class FastLookupPrefixesChangedException extends FastLookupIndexUnavailableExcep
 
 /**
  * Redis side of fast lookup: one Bloom filter (RedisBloom or valkey-bloom) per
- * generation holding every token, plus append-only postings for IP-range and
- * domain tokens.
+ * generation, split into shards of at most 64 MiB, holding every token, plus
+ * append-only postings for IP-range and domain tokens.
  *
  * The filter only proves absence. SQL answers exact tokens that may be present;
  * range and domain tokens read postings whose attribute IDs SQL re-verifies.
@@ -39,16 +39,19 @@ class FastLookupPrefixesChangedException extends FastLookupIndexUnavailableExcep
 class FastLookupFilter
 {
     /**
-     * Stamped when a generation with IP prefix masks is reserved. Code that
-     * knows only LEGACY_SCHEMA fails closed on it rather than adding ranges
-     * without updating the masks; a legacy namespace keeps being served.
+     * Stamped when a generation is reserved: 'bloom-2' added IP prefix masks,
+     * 'bloom-3' sharded filters. Code that knows only older values fails
+     * closed on a newer one; older namespaces keep being served.
      */
-    const SCHEMA = 'bloom-2';
-    const LEGACY_SCHEMA = 'bloom-1';
+    const SCHEMA = 'bloom-3';
+    const SCHEMAS = ['bloom-3', 'bloom-2', 'bloom-1'];
     const PREFIX = 'misp:fast_lookup:bf1:';
     const LEGACY_PREFIX = 'misp:fast_lookup:v3:';
     /** The TYPE of a RedisBloom and of a valkey-bloom filter. */
     const BLOOM_TYPES = ['MBbloom--', 'bloomfltr'];
+    /** Half of valkey-bloom's default 128 MiB bf.bloom-memory-usage-limit. */
+    const SHARD_BYTES = 67108864;
+    const MAX_SHARDS = 1024;
     const TOKEN_BYTES = 9;
     const MIN_CAPACITY = 1000000;
     const BUCKET_FIELDS = 64;
@@ -67,9 +70,14 @@ class FastLookupFilter
     private $legacyPrefix;
     private $scope;
     private $redis;
+    private $shardBytes;
 
-    public function __construct(string $namespace, array $scope, $redis = null)
+    /** $shardBytes exists for tests: it forces several shards at small sizes. */
+    public function __construct(string $namespace, array $scope, $redis = null, int $shardBytes = self::SHARD_BYTES)
     {
+        if ($shardBytes < 1) {
+            throw new InvalidArgumentException('Invalid fastLookup shard size.');
+        }
         if (empty($scope['attribute_types']) || !is_array($scope['attribute_types'])) {
             throw new InvalidArgumentException('The fastLookup type scope must be a nonempty list.');
         }
@@ -90,6 +98,7 @@ class FastLookupFilter
         $this->prefix = self::PREFIX . $hash . ':';
         $this->legacyPrefix = self::LEGACY_PREFIX . $hash . ':';
         $this->redis = $redis;
+        $this->shardBytes = $shardBytes;
     }
 
     public static function bucketsFor(int $entries): int
@@ -108,6 +117,28 @@ class FastLookupFilter
     public static function bloomTypeAllowed($type): bool
     {
         return is_string($type) && in_array($type, self::BLOOM_TYPES, true);
+    }
+
+    /** RedisBloom sizing: -ln(p)/ln(2)^2 bits per entry. */
+    public static function estimatedFilterBytes(int $capacity, float $rate): float
+    {
+        return max(1, $capacity) * -log($rate) / (log(2) ** 2) / 8;
+    }
+
+    public static function shardCount(int $capacity, float $rate, int $shardBytes = self::SHARD_BYTES): int
+    {
+        return max(1, (int)ceil(self::estimatedFilterBytes($capacity, $rate) / $shardBytes));
+    }
+
+    public static function shardCapacity(int $capacity, int $shards): int
+    {
+        return intdiv($capacity + $shards - 1, $shards);
+    }
+
+    /** Digest bytes 4-7; the posting bucket uses bytes 0-3. */
+    public static function shardOf(string $token, int $shards): int
+    {
+        return unpack('N', $token, 5)[1] % $shards;
     }
 
     public function moduleAvailable(): bool
@@ -145,7 +176,7 @@ class FastLookupFilter
             }
             throw new FastLookupIndexUnavailableException('Redis could not read the fastLookup index metadata.');
         }
-        if (!in_array($meta['schema'] ?? null, [self::SCHEMA, self::LEGACY_SCHEMA], true)
+        if (!in_array($meta['schema'] ?? null, self::SCHEMAS, true)
             || !isset($meta['live'], $meta['building'], $meta['fingerprint'], $meta['building_fingerprint'], $meta['revision'], $meta['scope'])
             || !in_array($meta['ready'] ?? null, ['0', '1'], true)) {
             throw new FastLookupIndexCorruptException('The fastLookup index metadata is missing or invalid.');
@@ -191,6 +222,10 @@ class FastLookupFilter
         if ($capacity < 1 || $rate <= 0 || $rate >= 1 || $rangeEntries < 0) {
             throw new InvalidArgumentException('Invalid fastLookup filter sizing.');
         }
+        $shards = self::shardCount($capacity, $rate, $this->shardBytes);
+        if ($shards > self::MAX_SHARDS) {
+            throw new OverflowException('The fastLookup filter would need more than ' . self::MAX_SHARDS . ' shards.');
+        }
         $buckets = self::bucketsFor($rangeEntries);
         try {
             $live = $this->metadata()['live'];
@@ -206,20 +241,33 @@ class FastLookupFilter
         }
         $this->evaluate($this->bloomTypesScript() . <<<'LUA'
 if redis.call('HGET', KEYS[1], 'live') == ARGV[1] then return redis.error_reply('a rebuild must use a fresh generation') end
-if redis.call('EXISTS', KEYS[2]) ~= 0 or redis.call('EXISTS', KEYS[3]) ~= 0 then return redis.error_reply('generation keys already exist') end
-redis.call('BF.RESERVE', KEYS[3], ARGV[4], ARGV[3], 'NONSCALING')
-local bloomType = redis.call('TYPE', KEYS[3]).ok
-if not BLOOM_TYPES[bloomType] then
-    redis.call('DEL', KEYS[3])
-    return redis.error_reply('unsupported Bloom filter type')
+for i = 2, #KEYS do
+    if redis.call('EXISTS', KEYS[i]) ~= 0 then return redis.error_reply('generation keys already exist') end
 end
-redis.call('HSET', KEYS[2], '!', ARGV[1], 'capacity', ARGV[3], 'rate', ARGV[4], 'inserted', '0', 'stale', '0', 'buckets', ARGV[5], 'cursor', '0',
-    'bloom_type', bloomType, 'p4', string.rep('0', 33), 'p6', string.rep('0', 129), 'pv', '0')
+local bloomType
+for i = 3, #KEYS do
+    local reply = redis.pcall('BF.RESERVE', KEYS[i], ARGV[4], ARGV[3], 'NONSCALING')
+    local failure = type(reply) == 'table' and reply.err and reply
+    if not failure then
+        local found = redis.call('TYPE', KEYS[i]).ok
+        bloomType = bloomType or found
+        if not BLOOM_TYPES[found] or found ~= bloomType then
+            failure = redis.error_reply('unsupported Bloom filter type')
+        end
+    end
+    if failure then
+        for j = 3, i do redis.call('DEL', KEYS[j]) end
+        return failure
+    end
+end
+redis.call('HSET', KEYS[2], '!', ARGV[1], 'capacity', ARGV[8], 'rate', ARGV[4], 'inserted', '0', 'stale', '0', 'buckets', ARGV[5], 'cursor', '0',
+    'shards', ARGV[7], 'bloom_type', bloomType, 'p4', string.rep('0', 33), 'p6', string.rep('0', 129), 'pv', '0')
 redis.call('HSET', KEYS[1], 'building', ARGV[1], 'building_fingerprint', ARGV[2], 'schema', ARGV[6])
 return 1
 LUA
-            , [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)],
-            [$generation, $fingerprint, (string)$capacity, rtrim(sprintf('%.10F', $rate), '0'), (string)$buckets, self::SCHEMA]);
+            , array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation, $shards)),
+            [$generation, $fingerprint, (string)self::shardCapacity($capacity, $shards), rtrim(sprintf('%.10F', $rate), '0'),
+                (string)$buckets, self::SCHEMA, (string)$shards, (string)$capacity]);
         $keys = [];
         for ($i = 0; $i < $buckets; ++$i) {
             $keys[] = $this->generationPrefix($generation) . 'x:' . $i;
@@ -266,7 +314,8 @@ LUA
                 $lengths[$network[0]][$network[1]] = true;
             }
         }
-        $fence = [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)];
+        $fence = $this->fenceKeys($generation);
+        $shards = count($fence) - 2;
         // Before any token of this call is visible: a range token's length must always be in the mask.
         if ($lengths[4] || $lengths[6]) {
             $this->evaluate($this->fenceScript() . <<<'LUA'
@@ -294,14 +343,33 @@ LUA
                 , $fence, [$generation, implode(',', array_keys($lengths[4])), implode(',', array_keys($lengths[6]))]);
         }
         foreach (array_chunk(array_map('strval', array_keys($tokens)), self::FILTER_BATCH) as $chunk) {
+            $groups = [];
+            foreach ($chunk as $token) { $groups[self::shardOf($token, $shards)][] = $token; }
+            ksort($groups);
+            $args = [$generation];
+            foreach ($groups as $shard => $members) {
+                array_push($args, (string)$shard, (string)count($members), ...$members);
+            }
             $this->evaluate($this->fenceScript() . <<<'LUA'
-local added = redis.call('BF.MADD', KEYS[3], unpack(ARGV, 2))
-local count = 0
-for _, flag in ipairs(added) do if flag == 1 then count = count + 1 end end
+local count, i = 0, 2
+while i <= #ARGV do
+    local shard, n = tonumber(ARGV[i]), tonumber(ARGV[i + 1])
+    if not shard or not n or shard < 0 or shard >= SHARDS or n < 1 then return redis.error_reply('malformed filter request') end
+    local added = redis.call('BF.MADD', KEYS[3 + shard], unpack(ARGV, i + 2, i + 1 + n))
+    for _, flag in ipairs(added) do
+        -- A full NONSCALING filter answers an error for the rest of the batch.
+        if type(flag) == 'table' and flag.err then
+            redis.call('HINCRBY', KEYS[2], 'inserted', count)
+            return redis.error_reply('Bloom filter is full')
+        end
+        if flag == 1 then count = count + 1 end
+    end
+    i = i + 2 + n
+end
 redis.call('HINCRBY', KEYS[2], 'inserted', count)
 return count
 LUA
-                , $fence, array_merge([$generation], $chunk));
+                , $fence, $args);
         }
         if (!$postings) {
             return;
@@ -350,7 +418,7 @@ LUA
         $this->identifier($generation);
         if ($count < 1) { return; }
         $this->evaluate($this->fenceScript() . "redis.call('HINCRBY', KEYS[2], 'stale', ARGV[2])\nreturn 1",
-            [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)], [$generation, (string)$count]);
+            $this->fenceKeys($generation), [$generation, (string)$count]);
     }
 
     public function setCursor(string $generation, string $cursor): void
@@ -358,20 +426,23 @@ LUA
         $this->identifier($generation);
         if ($cursor !== '0') { $this->decimalId($cursor); }
         $this->evaluate($this->fenceScript() . "redis.call('HSET', KEYS[2], 'cursor', ARGV[2])\nreturn 1",
-            [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)], [$generation, $cursor]);
+            $this->fenceKeys($generation), [$generation, $cursor]);
     }
 
     public function checkpoint(string $revision, bool $ready): void
     {
         $this->identifier($revision);
         $this->evaluate(<<<'LUA'
-local schema = redis.call('HGET', KEYS[1], 'schema')
-if schema ~= ARGV[3] and schema ~= ARGV[4] then return redis.error_reply('index missing') end
+local schema, known = redis.call('HGET', KEYS[1], 'schema'), false
+for i = 3, #ARGV do
+    if schema == ARGV[i] then known = true end
+end
+if not known then return redis.error_reply('index missing') end
 if ARGV[2] == '1' and redis.call('HGET', KEYS[1], 'live') == '' then return redis.error_reply('no live generation') end
 redis.call('HSET', KEYS[1], 'revision', ARGV[1], 'ready', ARGV[2])
 return 1
 LUA
-            , [$this->metaKey()], [$revision, $ready ? '1' : '0', self::SCHEMA, self::LEGACY_SCHEMA]);
+            , [$this->metaKey()], array_merge([$revision, $ready ? '1' : '0'], self::SCHEMAS));
     }
 
     public function activate(string $generation, string $fingerprint): void
@@ -383,7 +454,7 @@ if redis.call('HGET', KEYS[1], 'building') ~= ARGV[1] or redis.call('HGET', KEYS
 redis.call('HSET', KEYS[1], 'live', ARGV[1], 'fingerprint', ARGV[2], 'building', '', 'building_fingerprint', '', 'ready', '0')
 return 1
 LUA
-            , [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)], [$generation, $fingerprint]);
+            , $this->fenceKeys($generation), [$generation, $fingerprint]);
         $this->deleteGenerations([$generation]);
         $this->deleteMatching($this->legacyPrefix . '*', null);
     }
@@ -396,11 +467,11 @@ LUA
     {
         $this->identifier($generation);
         $reply = $this->evaluate($this->guardScript() . <<<'LUA'
-local failure = requireGeneration(KEYS[1], KEYS[2], ARGV[1])
+local failure = requireGeneration(KEYS[1], 2, ARGV[1])
 if failure then return failure end
 return redis.call('HMGET', KEYS[1], 'p4', 'p6', 'pv')
 LUA
-            , [$this->infoKey($generation), $this->bloomKey($generation)], [$generation]);
+            , array_merge([$this->infoKey($generation)], $this->filterKeys($generation, $this->shardLayout($generation))), [$generation]);
         if (!is_array($reply) || count($reply) !== 3) {
             throw new FastLookupIndexCorruptException('The fastLookup IP prefix state is corrupt.');
         }
@@ -450,26 +521,46 @@ LUA
         if (!$before['ready'] || $before['live'] !== $generation) {
             throw new FastLookupIndexUnavailableException('The fastLookup index is not ready for this generation.');
         }
-        $buckets = $before['generations'][$generation]['buckets'];
+        $info = $before['generations'][$generation];
+        $buckets = $info['buckets'];
+        $filterKeys = $this->filterKeys($generation, $info['shards']);
+        $shards = count($filterKeys);
         $count = 0;
         foreach (array_chunk(array_map('strval', array_keys($plan)), self::READ_BATCH_SIZE) as $batch) {
-            $keys = [$this->metaKey(), $this->infoKey($generation), $this->bloomKey($generation)];
+            $keys = array_merge([$this->metaKey(), $this->infoKey($generation)], $filterKeys);
             $args = [$generation, (string)($maximumIds * 21), $prefixVersion ?? '-'];
             foreach ($batch as $token) {
-                array_push($args, $token[0] === 'E' ? 0 : $this->keyIndex($keys, $this->postingKey($generation, $token, $buckets)), $token);
+                array_push($args, $token[0] === 'E' ? 0 : $this->keyIndex($keys, $this->postingKey($generation, $token, $buckets)),
+                    self::shardOf($token, $shards), $token);
             }
             $reply = $this->evaluate($this->guardScript() . $this->postingScript() . <<<'LUA'
 if redis.call('HGET', KEYS[1], 'live') ~= ARGV[1] or redis.call('HGET', KEYS[1], 'ready') ~= '1' then return redis.error_reply('index changed') end
-local failure = requireGeneration(KEYS[2], KEYS[3], ARGV[1])
+local failure, shards = requireGeneration(KEYS[2], 3, ARGV[1])
 if failure then return failure end
 if ARGV[3] ~= '-' and (redis.call('HGET', KEYS[2], 'pv') or '') ~= ARGV[3] then return {2} end
-local tokens = {}
-for i = 5, #ARGV, 2 do tokens[#tokens + 1] = ARGV[i] end
-local present = redis.call('BF.MEXISTS', KEYS[3], unpack(tokens))
+local groups, order, count = {}, {}, 0
+for i = 4, #ARGV, 3 do
+    count = count + 1
+    local shard = tonumber(ARGV[i + 1])
+    if not shard or shard < 0 or shard >= shards then return redis.error_reply('malformed filter request') end
+    if not groups[shard] then
+        groups[shard] = {tokens = {}, slots = {}}
+        order[#order + 1] = shard
+    end
+    local group = groups[shard]
+    group.tokens[#group.tokens + 1] = ARGV[i + 2]
+    group.slots[#group.slots + 1] = count
+end
+local present = {}
+for _, shard in ipairs(order) do
+    local group = groups[shard]
+    local flags = redis.call('BF.MEXISTS', KEYS[3 + shard], unpack(group.tokens))
+    for j, slot in ipairs(group.slots) do present[slot] = flags[j] end
+end
 local bytes, result = 0, {}
-for n, flag in ipairs(present) do
-    local keyIndex, token = tonumber(ARGV[2 + 2 * n]), ARGV[3 + 2 * n]
-    if flag ~= 1 then
+for n = 1, count do
+    local keyIndex, token = tonumber(ARGV[1 + 3 * n]), ARGV[3 + 3 * n]
+    if present[n] ~= 1 then
         result[n] = false
     elseif keyIndex == 0 then
         result[n] = '1'
@@ -541,7 +632,12 @@ LUA
         $info = $meta['generations'][$generation];
         $reason = null;
         $shared = $this->sumMemory($this->memory($this->metaKey(), $reason), $this->memory($this->infoKey($generation), $reason));
-        $filterBytes = $this->memory($this->bloomKey($generation), $reason);
+        $filterBytes = 0;
+        foreach ($this->filterKeys($generation, $info['shards']) as $key) {
+            $filterBytes = $this->sumMemory($filterBytes, $this->memory($key, $reason));
+        }
+        $reserved = $info['shards'] === null ? $info['capacity']
+            : $info['shards'] * self::shardCapacity($info['capacity'], $info['shards']);
         $postingBytes = 0; $entries = 0;
         for ($i = 0; $i < $info['buckets']; ++$i) {
             $bucket = $this->generationPrefix($generation) . 'x:' . $i;
@@ -571,7 +667,7 @@ LUA
         }
         return [
             'capacity' => $info['capacity'], 'rate' => $info['rate'], 'inserted' => $info['inserted'], 'stale' => $info['stale'],
-            'estimated_false_positive_rate' => self::estimatedFalsePositiveRate($info['capacity'], $info['rate'], $info['inserted']),
+            'estimated_false_positive_rate' => self::estimatedFalsePositiveRate($reserved, $info['rate'], $info['inserted']),
             'filter_bytes' => $filterBytes, 'posting_bytes' => $postingBytes, 'posting_entries' => $entries,
             'shared_memory_bytes' => $shared, 'measured_at' => gmdate('c'), 'memory_unavailable_reason' => $reason,
         ];
@@ -631,12 +727,13 @@ LUA
 
     private function generationInfo(string $generation): array
     {
+        $shards = $this->shardLayout($generation);
         $reply = $this->evaluate($this->guardScript() . <<<'LUA'
-local failure = requireGeneration(KEYS[1], KEYS[2], ARGV[1])
+local failure = requireGeneration(KEYS[1], 2, ARGV[1])
 if failure then return failure end
 return redis.call('HMGET', KEYS[1], 'capacity', 'rate', 'inserted', 'stale', 'buckets', 'cursor', 'p4', 'p6', 'pv')
 LUA
-            , [$this->infoKey($generation), $this->bloomKey($generation)], [$generation]);
+            , array_merge([$this->infoKey($generation)], $this->filterKeys($generation, $shards)), [$generation]);
         if (!is_array($reply) || count($reply) !== 9) {
             throw new FastLookupIndexCorruptException('Invalid fastLookup generation state.');
         }
@@ -653,7 +750,7 @@ LUA
             throw new FastLookupIndexCorruptException('Invalid fastLookup generation state.');
         }
         return ['capacity' => (int)$capacity, 'rate' => (float)$rate, 'inserted' => (int)$inserted,
-            'stale' => (int)$stale, 'buckets' => (int)$buckets, 'cursor' => $cursor];
+            'stale' => (int)$stale, 'buckets' => (int)$buckets, 'cursor' => $cursor, 'shards' => $shards];
     }
 
     /** All three prefix fields absent (a legacy generation) or all well formed. */
@@ -750,7 +847,46 @@ LUA
     private function leaseKey(): string { return $this->prefix . 'worker'; }
     private function generationPrefix($generation): string { return $this->prefix . 'g:' . $generation . ':'; }
     private function infoKey($generation): string { return $this->generationPrefix($generation) . 'info'; }
-    private function bloomKey($generation): string { return $this->generationPrefix($generation) . 'bf'; }
+    /** A legacy generation (null shards) has one unsharded filter. */
+    private function filterKeys(string $generation, ?int $shards): array
+    {
+        if ($shards === null) {
+            return [$this->generationPrefix($generation) . 'bf'];
+        }
+        $keys = [];
+        for ($i = 0; $i < $shards; ++$i) {
+            $keys[] = $this->generationPrefix($generation) . 'bf:' . $i;
+        }
+        return $keys;
+    }
+
+    /** The shard count a generation records; null for a legacy one. */
+    private function shardLayout(string $generation): ?int
+    {
+        $state = $this->call('hMGet', [$this->infoKey($generation), ['!', 'shards', 'bloom_type']]);
+        if (!is_array($state)) {
+            throw new FastLookupIndexUnavailableException('Redis could not read the fastLookup generation state.');
+        }
+        if (($state['!'] ?? false) !== $generation) {
+            throw new FastLookupIndexCorruptException('A fastLookup generation is missing.');
+        }
+        $shards = $state['shards'] ?? false;
+        $type = $state['bloom_type'] ?? false;
+        if (($shards === false || $shards === null) && ($type === false || $type === null)) {
+            return null;
+        }
+        if (!is_string($shards) || !preg_match('/\A[1-9][0-9]{0,3}\z/', $shards) || (int)$shards > self::MAX_SHARDS
+            || !self::bloomTypeAllowed($type)) {
+            throw new FastLookupIndexCorruptException('The fastLookup filter layout is corrupt.');
+        }
+        return (int)$shards;
+    }
+
+    private function fenceKeys(string $generation): array
+    {
+        return array_merge([$this->metaKey(), $this->infoKey($generation)],
+            $this->filterKeys($generation, $this->shardLayout($generation)));
+    }
     private function postingKey($generation, string $token, int $buckets): string
     {
         return $this->generationPrefix($generation) . 'x:' . (unpack('N', $token, 1)[1] % $buckets);
@@ -832,12 +968,12 @@ LUA
     {
         return in_array($error, ['missing generation state', 'missing Bloom filter'], true);
     }
-    /** KEYS[1..3] = metadata, generation state, filter; ARGV[1] = a live or building generation. */
+    /** KEYS[1..2] = metadata, generation state; KEYS[3..] = its filters; ARGV[1] = a live or building generation. */
     private function fenceScript(): string
     {
         return $this->guardScript() . <<<'LUA'
 if ARGV[1] ~= redis.call('HGET', KEYS[1], 'live') and ARGV[1] ~= redis.call('HGET', KEYS[1], 'building') then return redis.error_reply('generation changed') end
-local failure = requireGeneration(KEYS[2], KEYS[3], ARGV[1])
+local failure, SHARDS = requireGeneration(KEYS[2], 3, ARGV[1])
 if failure then return failure end
 
 LUA;
@@ -845,20 +981,35 @@ LUA;
     /**
      * The one fail-closed generation guard: BF.MEXISTS reports absence for a
      * missing key and BF.MADD creates a default filter, so every script checks
-     * the state sentinel and the filter's type first. A generation that
-     * recorded its type must keep it. Returns an error reply, or nil when the
-     * generation is intact.
+     * the state sentinel, the layout, and each shard's name and type first.
+     * KEYS[first..] hold the filters. Returns an error reply, or nil and the
+     * shard count when the generation is intact.
      */
     private function guardScript(): string
     {
         return $this->bloomTypesScript() . <<<'LUA'
-local function requireGeneration(infoKey, bloomKey, generation)
-    local state = redis.call('HMGET', infoKey, '!', 'bloom_type')
+local function requireGeneration(infoKey, first, generation)
+    local state = redis.call('HMGET', infoKey, '!', 'shards', 'bloom_type')
     if state[1] ~= generation then return redis.error_reply('missing generation state') end
-    if redis.call('EXISTS', bloomKey) ~= 1 then return redis.error_reply('missing Bloom filter') end
-    local found, bloomType = redis.call('TYPE', bloomKey).ok, state[2]
-    if not BLOOM_TYPES[found] or (bloomType and found ~= bloomType) then return redis.error_reply('missing Bloom filter') end
-    return nil
+    local base, shards, bloomType = string.sub(infoKey, 1, -5) .. 'bf', state[2], state[3]
+    local sharded, count = shards or bloomType, 1
+    if sharded then
+        if not shards or not string.match(shards, '^[1-9][0-9]*$') or not BLOOM_TYPES[bloomType or ''] then
+            return redis.error_reply('missing Bloom filter')
+        end
+        count = tonumber(shards)
+    end
+    for i = 0, count - 1 do
+        local key = KEYS[first + i]
+        if key ~= (sharded and base .. ':' .. i or base) or redis.call('EXISTS', key) ~= 1 then
+            return redis.error_reply('missing Bloom filter')
+        end
+        local found = redis.call('TYPE', key).ok
+        if not BLOOM_TYPES[found] or (bloomType and found ~= bloomType) then
+            return redis.error_reply('missing Bloom filter')
+        end
+    end
+    return nil, count
 end
 
 LUA;

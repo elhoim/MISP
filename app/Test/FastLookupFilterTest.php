@@ -33,10 +33,10 @@ class FastLookupFilterTest extends TestCase
         };
     }
 
-    private function filter($scope = null, $redis = null)
+    private function filter($scope = null, $redis = null, int $shardBytes = FastLookupFilter::SHARD_BYTES)
     {
         return new FastLookupFilter('test-database', $scope ?? ['attribute_types' => ['domain'], 'published_only' => true],
-            $redis ?? $this->disconnected());
+            $redis ?? $this->disconnected(), $shardBytes);
     }
 
     private function token(string $prefix): string
@@ -323,14 +323,14 @@ class FastLookupFilterTest extends TestCase
 
     public function unknownSchemas(): array
     {
-        return ['v3' => ['v3'], 'a later schema' => ['bloom-3'], 'empty' => ['']];
+        return ['v3' => ['v3'], 'a later schema' => ['bloom-4'], 'empty' => ['']];
     }
 
-    public function testCurrentAndLegacySchemasAreServed(): void
+    public function testEverySchemaIsServed(): void
     {
-        $this->assertSame('bloom-2', FastLookupFilter::SCHEMA);
-        $this->assertSame('bloom-1', FastLookupFilter::LEGACY_SCHEMA);
-        foreach ([FastLookupFilter::SCHEMA, FastLookupFilter::LEGACY_SCHEMA] as $schema) {
+        $this->assertSame('bloom-3', FastLookupFilter::SCHEMA);
+        $this->assertSame(['bloom-3', 'bloom-2', 'bloom-1'], FastLookupFilter::SCHEMAS);
+        foreach (FastLookupFilter::SCHEMAS as $schema) {
             $this->assertTrue($this->filter(null, $this->metadataDouble(['schema' => $schema]))->metadata()['ready'], $schema);
         }
     }
@@ -349,7 +349,7 @@ class FastLookupFilterTest extends TestCase
 
     public function testReserveStampsTheCurrentSchemaWithTheMaskedGeneration(): void
     {
-        $calls = $this->reserveCalls(['hGetAll' => ['schema' => FastLookupFilter::LEGACY_SCHEMA] + $this->validMetadataFields()]);
+        $calls = $this->reserveCalls(['hGetAll' => ['schema' => 'bloom-1'] + $this->validMetadataFields()]);
         $reserve = array_values(array_filter($calls, function ($call) {
             return $call[0] === 'eval' && strpos($call[1][0], 'BF.RESERVE') !== false;
         }));
@@ -357,7 +357,7 @@ class FastLookupFilterTest extends TestCase
         [$script, $arguments, $keyCount] = $reserve[0][1];
         $this->assertStringContainsString("'p4'", $script);
         $this->assertStringContainsString("'building', ARGV[1], 'building_fingerprint', ARGV[2], 'schema', ARGV[6]", $script);
-        $this->assertSame('bloom-2', $arguments[$keyCount + 5]);
+        $this->assertSame('bloom-3', $arguments[$keyCount + 5]);
         $this->assertNotContains('hMSet', array_column($calls, 0), 'A served legacy namespace is not reset.');
     }
 
@@ -366,24 +366,24 @@ class FastLookupFilterTest extends TestCase
         $calls = $this->reserveCalls(['hGetAll' => []]);
         $reset = array_values(array_filter($calls, function ($call) { return $call[0] === 'hMSet'; }));
         $this->assertCount(1, $reset);
-        $this->assertSame('bloom-2', $reset[0][1][1]['schema']);
+        $this->assertSame('bloom-3', $reset[0][1][1]['schema']);
     }
 
-    public function testCheckpointAcceptsBothSchemas(): void
+    public function testCheckpointAcceptsEverySchema(): void
     {
         $redis = $this->recordingRedis(['eval' => 1]);
         $this->filter(null, $redis)->checkpoint('r1', false);
         [, [$script, $arguments, $keyCount]] = $redis->arguments[1];
-        $this->assertStringContainsString('schema ~= ARGV[3] and schema ~= ARGV[4]', $script);
-        $this->assertSame(['bloom-2', 'bloom-1'], array_slice($arguments, $keyCount + 2, 2));
+        $this->assertStringContainsString('if schema == ARGV[i] then known = true end', $script);
+        $this->assertSame(FastLookupFilter::SCHEMAS, array_slice($arguments, $keyCount + 2));
     }
 
-    /** metadata() for a live generation 'live1' whose state HMGET answers $state. */
-    private function liveGenerationMetadata(array $state, string $field = 'live')
+    /** metadata() for a generation 'live1' whose layout HMGET answers $layout and state HMGET answers $state. */
+    private function liveGenerationMetadata(array $state, string $field = 'live', array $layout = ['!' => 'live1', 'shards' => false, 'bloom_type' => false])
     {
         $fields = [$field => 'live1'] + ($field === 'live' ? [] : ['live' => '']) + $this->validMetadataFields();
         $fields['ready'] = $field === 'live' ? '1' : '0';
-        return $this->filter(null, $this->recordingRedis(['hGetAll' => $fields, 'eval' => $state]))->metadata();
+        return $this->filter(null, $this->recordingRedis(['hGetAll' => $fields, 'hMGet' => $layout, 'eval' => $state]))->metadata();
     }
 
     private function generationState(array $masks): array
@@ -415,7 +415,8 @@ class FastLookupFilterTest extends TestCase
 
     public function testCorruptPrefixMaskReplyIsCorruption(): void
     {
-        foreach ([['eval' => false, 'getLastError' => 'corrupt prefix mask'], ['eval' => new RuntimeException('corrupt prefix mask')]] as $replies) {
+        $layout = ['!' => 'generation', 'shards' => '1', 'bloom_type' => 'MBbloom--'];
+        foreach ([['hMGet' => $layout, 'eval' => false, 'getLastError' => 'corrupt prefix mask'], ['hMGet' => $layout, 'eval' => new RuntimeException('corrupt prefix mask')]] as $replies) {
             try {
                 $this->filter(null, $this->recordingRedis($replies))
                     ->add('generation', [['id' => '1', 'tokens' => [$this->token('I')], 'networks' => [[4, 24]]]]);
@@ -494,6 +495,7 @@ class FastLookupFilterTest extends TestCase
             'BUSY on the generation check' => [['hGetAll' => ['schema' => 'bloom-1', 'live' => 'live1', 'building' => '',
                 'fingerprint' => 'f', 'building_fingerprint' => '', 'revision' => '1', 'ready' => '1',
                 'scope' => json_encode(['attribute_types' => ['domain'], 'published_only' => true])],
+                'hMGet' => ['!' => 'live1', 'shards' => false, 'bloom_type' => false],
                 'eval' => new RuntimeException('BUSY Redis is busy running a script.')]],
         ];
     }
@@ -516,6 +518,7 @@ class FastLookupFilterTest extends TestCase
         $this->filter(null, $this->recordingRedis(['hGetAll' => ['schema' => FastLookupFilter::SCHEMA, 'live' => 'live1', 'building' => '',
             'fingerprint' => 'f', 'building_fingerprint' => '', 'revision' => '1', 'ready' => '1',
             'scope' => json_encode(['attribute_types' => ['domain'], 'published_only' => true])],
+            'hMGet' => ['!' => 'live1', 'shards' => false, 'bloom_type' => false],
             'eval' => new RuntimeException('missing Bloom filter')]))->metadata();
     }
 
@@ -600,6 +603,7 @@ class FastLookupFilterTest extends TestCase
             public function eval($script, $args, $keys) { $this->scripts[] = $script; return $this->reply; }
             public function clearLastError() { return true; }
             public function getLastError() { return null; }
+            public function hMGet($key, $fields) { return ['!' => 'generation', 'shards' => '1', 'bloom_type' => 'MBbloom--']; }
         };
     }
 
@@ -674,6 +678,225 @@ class FastLookupFilterTest extends TestCase
             $this->assertNotInstanceOf(FastLookupIndexCorruptException::class, $e);
         }
         $this->assertNotContains('scan', $redis->calls, 'Nothing is reclaimed after a refused reserve.');
+    }
+
+    // -- sharded filters ---------------------------------------------------------
+
+    /** 'E', four posting-bucket bytes, then four shard bytes. */
+    private function shardedToken(int $shardWord, int $bucketWord = 0): string
+    {
+        return 'E' . pack('N', $bucketWord) . pack('N', $shardWord);
+    }
+
+    private function keyName(string $generation, string $suffix): string
+    {
+        return FastLookupFilter::PREFIX . hash('sha256', 'test-database') . ':g:' . $generation . ':' . $suffix;
+    }
+
+    /** Answers hGetAll/hMGet from $replies; eval with the reply of the first fragment its script contains, else 1. */
+    private function scriptedRedis(array $replies, array $scripts)
+    {
+        return new class($replies, $scripts) {
+            public $evals = [];
+            private $replies;
+            private $scripts;
+            public function __construct(array $replies, array $scripts) { $this->replies = $replies; $this->scripts = $scripts; }
+            public function eval($script, $args, $keyCount)
+            {
+                $this->evals[] = [$script, $args, $keyCount];
+                foreach ($this->scripts as $fragment => $reply) {
+                    if (strpos($script, $fragment) !== false) { return $reply; }
+                }
+                return 1;
+            }
+            public function clearLastError() { return true; }
+            public function getLastError() { return null; }
+            public function __call($method, $args) { return $this->replies[$method] ?? null; }
+        };
+    }
+
+    public function testShardCountSplitsAtTheShardSize(): void
+    {
+        $bytes = FastLookupFilter::estimatedFilterBytes(1000000, 0.001);
+        $this->assertSame(1, FastLookupFilter::shardCount(1000000, 0.001, (int)ceil($bytes)));
+        $this->assertSame(2, FastLookupFilter::shardCount(1000000, 0.001, (int)ceil($bytes) - 1));
+        $this->assertSame(2, FastLookupFilter::shardCount(1000000, 0.001, (int)ceil($bytes / 2)));
+        $this->assertSame(3, FastLookupFilter::shardCount(1000000, 0.001, (int)floor($bytes / 2)));
+    }
+
+    public function testDefaultShardsKeepEveryFilterUnderHalfValkeysLimit(): void
+    {
+        $this->assertSame(67108864, FastLookupFilter::SHARD_BYTES);
+        $this->assertSame(1, FastLookupFilter::shardCount(1, 0.5));
+        $this->assertSame(1, FastLookupFilter::shardCount(1000000, 0.001));
+        $this->assertSame(1, FastLookupFilter::shardCount(37000000, 0.001));
+        $this->assertSame(2, FastLookupFilter::shardCount(38000000, 0.001));
+        $this->assertSame(2, FastLookupFilter::shardCount(40000000, 0.001));
+        $this->assertSame(3, FastLookupFilter::shardCount(80000000, 0.001));
+        $this->assertSame(9, FastLookupFilter::shardCount(300000000, 0.001));
+    }
+
+    public function testShardCapacityRoundsUpSoTheShardsHoldTheWholeCapacity(): void
+    {
+        $this->assertSame(1000, FastLookupFilter::shardCapacity(1000, 1));
+        $this->assertSame(4, FastLookupFilter::shardCapacity(10, 3));
+        $this->assertSame(333334, FastLookupFilter::shardCapacity(1000000, 3));
+        $this->assertSame(20000000, FastLookupFilter::shardCapacity(40000000, 2));
+        foreach ([[10, 3], [1000001, 7], [80000000, 3]] as [$capacity, $shards]) {
+            $total = $shards * FastLookupFilter::shardCapacity($capacity, $shards);
+            $this->assertGreaterThanOrEqual($capacity, $total);
+            $this->assertLessThan($capacity + $shards, $total);
+        }
+    }
+
+    public function testShardOfUsesDigestBytesFourToSeven(): void
+    {
+        $this->assertSame(1, FastLookupFilter::shardOf($this->shardedToken(7), 3));
+        $this->assertSame(0, FastLookupFilter::shardOf($this->shardedToken(0xFFFFFFFF), 3));
+        $this->assertSame(0, FastLookupFilter::shardOf($this->shardedToken(5, 123), 1));
+        $this->assertSame(FastLookupFilter::shardOf($this->shardedToken(9, 1), 4), FastLookupFilter::shardOf($this->shardedToken(9, 0xABCDEF01), 4));
+    }
+
+    public function testInvalidShardSizeCannotConstructAFilter(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->filter(null, null, 0);
+    }
+
+    public function testReserveBeyondTheShardLimitFailsBeforeAnyRedisCall(): void
+    {
+        $this->expectException(OverflowException::class);
+        $this->filter(null, null, 1)->reserve('next', 'fingerprint', 1000000, 0.001, 1);
+    }
+
+    public function testReserveSplitsTheFilterIntoShards(): void
+    {
+        $redis = $this->recordingRedis(['hGetAll' => $this->validMetadataFields(), 'eval' => 1, 'scan' => []]);
+        try {
+            $this->filter(null, $redis, 1 << 20)->reserve('next', 'fingerprint', 1000000, 0.001, 1);
+        } catch (FastLookupIndexUnavailableException $e) {
+            // The double's SCAN cursor never ends the cleanup.
+        }
+        $reserve = array_values(array_filter($redis->arguments, function ($call) {
+            return $call[0] === 'eval' && strpos($call[1][0], 'BF.RESERVE') !== false;
+        }));
+        [$script, $arguments, $keyCount] = $reserve[0][1];
+        $this->assertSame(4, $keyCount);
+        $this->assertSame([$this->keyName('next', 'bf:0'), $this->keyName('next', 'bf:1')], array_slice($arguments, 2, 2));
+        $this->assertSame('500000', $arguments[$keyCount + 2]);
+        $this->assertSame('bloom-3', $arguments[$keyCount + 5]);
+        $this->assertSame(['2', '1000000'], array_slice($arguments, $keyCount + 6, 2));
+        $this->assertStringContainsString("'shards', ARGV[7], 'bloom_type', bloomType", $script);
+        $this->assertStringContainsString("for j = 3, i do redis.call('DEL', KEYS[j]) end", $script);
+    }
+
+    public function testLegacyGenerationReadsItsUnshardedFilter(): void
+    {
+        $redis = $this->recordingRedis(['hGetAll' => ['live' => 'live1'] + $this->validMetadataFields(),
+            'hMGet' => ['!' => 'live1', 'shards' => false, 'bloom_type' => false], 'eval' => $this->generationState([false, false, false])]);
+        $meta = $this->filter(null, $redis)->metadata();
+        $this->assertNull($meta['generations']['live1']['shards']);
+        $evals = array_values(array_filter($redis->arguments, function ($call) { return $call[0] === 'eval'; }));
+        [, $arguments, $keyCount] = $evals[0][1];
+        $this->assertSame([$this->keyName('live1', 'info'), $this->keyName('live1', 'bf')], array_slice($arguments, 0, $keyCount));
+    }
+
+    public function testShardedGenerationGuardsEveryShard(): void
+    {
+        $redis = $this->recordingRedis(['hGetAll' => ['live' => 'live1'] + $this->validMetadataFields(),
+            'hMGet' => ['!' => 'live1', 'shards' => '3', 'bloom_type' => 'bloomfltr'], 'eval' => $this->generationState([false, false, false])]);
+        $this->assertSame(3, $this->filter(null, $redis)->metadata()['generations']['live1']['shards']);
+        $evals = array_values(array_filter($redis->arguments, function ($call) { return $call[0] === 'eval'; }));
+        [$script, $arguments, $keyCount] = $evals[0][1];
+        $this->assertStringContainsString('requireGeneration(KEYS[1], 2, ARGV[1])', $script);
+        $this->assertSame([$this->keyName('live1', 'info'), $this->keyName('live1', 'bf:0'), $this->keyName('live1', 'bf:1'),
+            $this->keyName('live1', 'bf:2')], array_slice($arguments, 0, $keyCount));
+    }
+
+    public function corruptLayouts(): array
+    {
+        return [
+            'zero shards' => [['!' => 'live1', 'shards' => '0', 'bloom_type' => 'bloomfltr']],
+            'non-decimal shards' => [['!' => 'live1', 'shards' => 'x', 'bloom_type' => 'bloomfltr']],
+            'too many shards' => [['!' => 'live1', 'shards' => '1025', 'bloom_type' => 'bloomfltr']],
+            'shards without a type' => [['!' => 'live1', 'shards' => '2', 'bloom_type' => false]],
+            'a type without shards' => [['!' => 'live1', 'shards' => false, 'bloom_type' => 'MBbloom--']],
+            'a foreign type' => [['!' => 'live1', 'shards' => '2', 'bloom_type' => 'string']],
+            'another generation' => [['!' => 'other', 'shards' => '2', 'bloom_type' => 'MBbloom--']],
+        ];
+    }
+
+    /** @dataProvider corruptLayouts */
+    public function testCorruptFilterLayoutIsCorruption(array $layout): void
+    {
+        $this->expectException(FastLookupIndexCorruptException::class);
+        $this->liveGenerationMetadata($this->generationState([false, false, false]), 'live', $layout);
+    }
+
+    /** @dataProvider corruptLayouts */
+    public function testBuildingGenerationWithACorruptLayoutIsOmitted(array $layout): void
+    {
+        $meta = $this->liveGenerationMetadata($this->generationState([false, false, false]), 'building', $layout);
+        $this->assertSame('live1', $meta['building']);
+        $this->assertSame([], $meta['generations']);
+    }
+
+    public function testRefusedLayoutReadIsNotCorruption(): void
+    {
+        $redis = $this->recordingRedis(['hGetAll' => ['live' => 'live1'] + $this->validMetadataFields(), 'hMGet' => false]);
+        try {
+            $this->filter(null, $redis)->metadata();
+            $this->fail('A refused layout read must fail closed.');
+        } catch (FastLookupIndexUnavailableException $e) {
+            $this->assertNotInstanceOf(FastLookupIndexCorruptException::class, $e);
+        }
+    }
+
+    public function testAddSendsEachTokenToItsShard(): void
+    {
+        [$t4, $t7, $t10] = [$this->shardedToken(4), $this->shardedToken(7), $this->shardedToken(10)];
+        $redis = $this->scriptedRedis(['hMGet' => ['!' => 'live1', 'shards' => '2', 'bloom_type' => 'bloomfltr']], []);
+        $this->filter(null, $redis)->add('live1', [['id' => '1', 'tokens' => [$t4, $t7, $t10]]]);
+        $adds = array_values(array_filter($redis->evals, function ($eval) { return strpos($eval[0], 'BF.MADD') !== false; }));
+        $this->assertCount(1, $adds);
+        [$script, $arguments, $keyCount] = $adds[0];
+        $this->assertStringContainsString("redis.call('BF.MADD', KEYS[3 + shard]", $script);
+        $this->assertSame([$this->keyName('live1', 'bf:0'), $this->keyName('live1', 'bf:1')], array_slice($arguments, 2, 2));
+        $this->assertSame(['live1', '0', '2', $t4, $t10, '1', '1', $t7], array_slice($arguments, $keyCount));
+    }
+
+    public function testFullShardFailsTheAddInsteadOfDroppingTokens(): void
+    {
+        $redis = $this->recordingRedis(['hMGet' => ['!' => 'live1', 'shards' => '2', 'bloom_type' => 'bloomfltr'], 'eval' => false,
+            'getLastError' => 'Bloom filter is full']);
+        try {
+            $this->filter(null, $redis)->add('live1', [['id' => '1', 'tokens' => [$this->shardedToken(4)]]]);
+            $this->fail('A full shard must fail the add.');
+        } catch (FastLookupIndexUnavailableException $e) {
+            $this->assertNotInstanceOf(FastLookupIndexCorruptException::class, $e);
+        }
+        $evals = array_values(array_filter($redis->arguments, function ($call) { return $call[0] === 'eval'; }));
+        $this->assertStringContainsString("return redis.error_reply('Bloom filter is full')", $evals[0][1][0]);
+    }
+
+    public function testCandidatesProbeEachTokenInItsShard(): void
+    {
+        [$t4, $t7, $t10] = [$this->shardedToken(4), $this->shardedToken(7), $this->shardedToken(10)];
+        $redis = $this->scriptedRedis([
+            'hGetAll' => ['live' => 'live1', 'fingerprint' => 'f'] + $this->validMetadataFields(),
+            'hMGet' => ['!' => 'live1', 'shards' => '2', 'bloom_type' => 'bloomfltr'],
+        ], [
+            'BF.MEXISTS' => [1, [false, false, false]],
+            "'capacity', 'rate', 'inserted'" => $this->generationState([false, false, false]),
+        ]);
+        $plan = [];
+        foreach ([$t4, $t7, $t10] as $token) { $plan[] = [['token' => $token, 'kind' => 'exact']]; }
+        $result = $this->filter(null, $redis)->candidates('live1', $plan);
+        $this->assertSame([false, false, false], array_column($result, 'exact'));
+        $probes = array_values(array_filter($redis->evals, function ($eval) { return strpos($eval[0], 'BF.MEXISTS') !== false; }));
+        [, $arguments, $keyCount] = $probes[0];
+        $this->assertSame(4, $keyCount);
+        $this->assertSame([0, 0, $t4, 0, 1, $t7, 0, 0, $t10], array_slice($arguments, $keyCount + 3));
     }
 
     public function testScopeDisagreeingWithConfigurationFailsClosed(): void

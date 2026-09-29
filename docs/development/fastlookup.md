@@ -20,6 +20,9 @@ cannot be reached. Its SQL queue has been retained.`), so an outage is not
 mistaken for a missing module. The
 index only supports MySQL/MariaDB.
 
+Redis Cluster and Valkey cluster mode are not supported: every index script
+touches several keys of one generation.
+
 ## Configuration and operation
 
 | Setting | Default | Effect |
@@ -96,23 +99,33 @@ fingerprint. `FastLookupValueTool` maps database values and request values into
 compact exact/network/domain tokens. `FastLookupFilter` owns Redis data;
 `FastLookupIndexManager` owns SQL checkpoints, backfill and mutation delivery.
 
-Redis holds one RedisBloom filter per generation (key prefix
-`misp:fast_lookup:bf1:<sha256(namespace)>:`, no TTL). The filter is a single
-`NONSCALING` `BF.RESERVE` holding every exact, range and domain token, sized to
-`max(1,000,000, 1.5 × 2 × in-scope attributes)`: two tokens per attribute
-headroom at 1.5x, with a 1,000,000-token floor. `BF.MEXISTS`/`BF.MADD` only
-prove absence; a token the filter cannot rule out still goes to SQL for exact
-values, or reads its postings for range/domain values, which SQL then
-revalidates. Range and domain attribute IDs live in listpack-sized bucket
-hashes (about 64 fields per bucket); a posting over 64 bytes moves out to an
-overflow key `<bucket>:<hex token>` holding `<generation>|<ids>`, capped at
-8 MiB and 500,000 IDs, so one popular value never inflates its bucket. Edits
-and deletions leave stale filter entries behind — the filter only grows, so a
-removed or changed value's old token is never cleared — and SQL revalidation
-drops them from results. A rebuild is scheduled automatically once the filter
-has inserted at least 80% of its capacity, or once it holds at least 10,000
-tokens with 10% or more of them stale; run `Admin rebuildFastLookup` nightly
-where automatic scheduling is not enough.
+Redis holds one Bloom filter per generation (key prefix
+`misp:fast_lookup:bf1:<sha256(namespace)>:`, no TTL) holding every exact, range
+and domain token, sized to `max(1,000,000, 1.5 × 2 × in-scope attributes)`: two
+tokens per attribute headroom at 1.5x, with a 1,000,000-token floor. The filter
+is split into S `NONSCALING` shards `g:<generation>:bf:<i>`, where S = max(1,
+⌈estimated bytes / 64 MiB⌉) and estimated bytes = capacity × −ln(rate) / ln(2)²
+/ 8. Each shard reserves ⌈capacity / S⌉ at the configured rate, so every shard
+keeps that false-positive rate. A token's shard is its digest bytes 4–7 modulo
+S; its posting bucket uses bytes 0–3. valkey-bloom refuses a Bloom object over
+128 MiB by default (`bf.bloom-memory-usage-limit`), which a single filter
+reaches at about 25M in-scope attributes; 64 MiB shards stay under it with no
+configuration. The info hash records the shard count (`shards`) and the filter
+type (`bloom_type`); a generation built before sharding has one filter
+`g:<generation>:bf` and neither field, and is served as it is. A full shard
+refuses further tokens, and the write fails closed rather than dropping them.
+`BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter cannot rule out
+still goes to SQL for exact values, or reads its postings for range/domain
+values, which SQL then revalidates. Range and domain attribute IDs live in
+listpack-sized bucket hashes (about 64 fields per bucket); a posting over 64
+bytes moves out to an overflow key `<bucket>:<hex token>` holding
+`<generation>|<ids>`, capped at 8 MiB and 500,000 IDs, so one popular value
+never inflates its bucket. Edits and deletions leave stale filter entries behind
+— the filter only grows, so a removed or changed value's old token is never
+cleared — and SQL revalidation drops them from results. A rebuild is scheduled
+automatically once the filter has inserted at least 80% of its capacity, or once
+it holds at least 10,000 tokens with 10% or more of them stale; run `Admin
+rebuildFastLookup` nightly where automatic scheduling is not enough.
 
 Internal rows in the existing `admin_settings` table contain the SQL checkpoint and
 per-event dirty revision tokens; no schema migration or runtime dependency is
@@ -187,9 +200,10 @@ and a second change answers 503. Requests without range tokens never check
 every prefix length, and adding to it never creates them. Masks present on
 only some of the three fields, or malformed, make the generation corrupt.
 
-Reserving a generation with masks stamps the namespace metadata schema as
-`bloom-2`; earlier releases know only `bloom-1` and fail closed on it rather
-than adding ranges without updating the masks. `bloom-1` namespaces keep being
+Reserving a generation stamps the namespace metadata schema: `bloom-2` added
+the IP prefix masks and `bloom-3` the sharded filters. Earlier releases know
+only the older values and fail closed on a newer one rather than writing a
+generation they cannot read; `bloom-1` and `bloom-2` namespaces keep being
 served until the next rebuild replaces their generation. All MISP servers
 sharing one Redis must run the same release: after a downgrade the older
 release treats the index as invalid and rebuilds it from scratch, and so does
@@ -373,19 +387,21 @@ doubles so test discovery cannot replace other suites' global classes.
 app/Vendor/bin/phpunit app/Test/
 MISP_FASTLOOKUP_LIFECYCLE_SOCKET=/path/to/disposable/mysql.sock app/Vendor/bin/phpunit --filter 'FastLookup(DeletionIntegration|IndexLifecycleIntegration|SqlCollation)Test' app/Test/
 bash tests/benchmarks/FastLookupIntegration.sh /path/to/cakephp/lib/Cake
+MISP_FASTLOOKUP_BACKEND=valkey bash tests/benchmarks/FastLookupIntegration.sh /path/to/cakephp/lib/Cake contract
 php tests/benchmarks/FastLookupFilterRedisContract.php /path/to/disposable/redis.sock
 FL_PER_TYPE=100000 php tests/benchmarks/FastLookupScale.php /path/to/cakephp/lib/Cake /path/to/disposable/mysql.sock /path/to/disposable/redis.sock
 ```
 
-`FastLookupFilterRedisContract.php` (replacing `FastLookupIndexRedisContract.php`)
-needs Redis 8 or Redis Stack, since it exercises the RedisBloom `BF.*` commands
-directly. The shell runner's default Redis image (`redis:8`) bundles RedisBloom;
-if you override `MISP_REDIS_IMAGE`, point it at an image that provides
-RedisBloom rather than plain Redis.
+`FastLookupFilterRedisContract.php` exercises the `BF.*` commands directly, so
+it needs Redis 8, Redis Stack or Valkey with valkey-bloom. The shell runner's
+second argument picks the runner: `integration` (the default), `contract` or
+`scale`. `MISP_FASTLOOKUP_BACKEND=redis|valkey` picks `redis:8.2` or
+`valkey/valkey-bundle:8.1`; `MISP_REDIS_IMAGE` still overrides the image,
+which must provide a Bloom module.
 
 Use disposable databases and Redis only. The shell runner starts socket-only
 MariaDB/Redis containers with no published ports and uses existing local images.
-Its defaults are `localhost/misp-live:tmp`, `mariadb:10.11` and `redis:8`; override
+Its defaults are `localhost/misp-live:tmp`, `mariadb:10.11` and `redis:8.2`; override
 `MISP_PHP_IMAGE`, `MISP_MARIADB_IMAGE`, `MISP_REDIS_IMAGE` as needed. Large SIEM
 workloads should be benchmarked with the deployment's type distribution, ACLs,
 event sizes and database/Redis latency. Fixture timings are not production capacity
