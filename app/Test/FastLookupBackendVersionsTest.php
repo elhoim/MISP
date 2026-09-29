@@ -22,7 +22,9 @@ class FastLookupBackendVersionsTest extends TestCase
             public function info($section) { return $this->info; }
             public function rawCommand(...$args)
             {
-                if ($this->modules instanceof Throwable) { throw $this->modules; }
+                if ($this->modules instanceof Throwable) {
+                    throw $this->modules;
+                }
                 return $this->modules;
             }
         };
@@ -45,6 +47,28 @@ class FastLookupBackendVersionsTest extends TestCase
             $this->server(['redis_version' => '8.2.10'], []));
         $this->assertSame(['backend' => 'redis', 'backend_version' => '8.2.10',
             'redis' => '8.2.10', 'modules' => []], $versions);
+    }
+
+    public function testMalformedModuleEntriesAreSkipped(): void
+    {
+        $versions = fastLookupBackendVersions($this->server(
+            ['redis_version' => '8.2.10'],
+            ['junk', [], ['name'], ['name', 'bf', 'ver', 7], ['ver', 1]]));
+        $this->assertSame(['bf' => 7], $versions['modules']);
+    }
+
+    public function testMissingInfoDoesNotWarn(): void
+    {
+        $versions = fastLookupBackendVersions($this->server([], []));
+        $this->assertNull($versions['backend_version']);
+    }
+
+    public function testFilterKeyNames(): void
+    {
+        foreach (['g:1:bf' => true, 'g:1:bf:3' => true, 'g:1:bfx' => false,
+            'g:1:bf:' => false, 'g:1:bf:x' => false] as $key => $expected) {
+            $this->assertSame($expected, fastLookupIsFilterKey($key), $key);
+        }
     }
 
     public function testRefusedModuleListIsUnknownNotEmpty(): void

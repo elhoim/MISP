@@ -333,10 +333,10 @@ do {
     $keys = $redis->scan($cursor, $namespace . '*', 1000) ?: [];
     foreach ($keys as $key) {
         $rest = substr($key, strlen($namespace));
-        if (preg_match('/^g:[^:]+:(bf(?::\d+)?|info|x:\d+:[0-9a-f]+|x:\d+)$/', $rest, $m)) {
-            if (strpos($m[1], 'bf') === 0) {
-                $class = 'bloom_filter';
-            } elseif ($m[1] === 'info') {
+        if (fastLookupIsFilterKey($rest)) {
+            $class = 'bloom_filter';
+        } elseif (preg_match('/^g:[^:]+:(info|x:\d+:[0-9a-f]+|x:\d+)$/', $rest, $m)) {
+            if ($m[1] === 'info') {
                 $class = 'global';
             } else {
                 $class = substr_count($m[1], ':') === 2 ? 'overflow_postings' : 'postings';

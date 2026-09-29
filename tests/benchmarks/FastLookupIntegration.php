@@ -440,7 +440,14 @@ $cursor = null;
 do {
     foreach ($redis->scan($cursor, $namespace . 'g:*:bf*', 1000) ?: [] as $key) { $filterKeys[] = $key; }
 } while ($cursor !== 0);
-same(true, count($filterKeys) >= 1, 'the live Bloom filter exists');
+$shardIndexes = [];
+foreach ($filterKeys as $key) {
+    $shardIndexes[] = fastLookupIsFilterKey(substr($key, strlen($namespace)))
+        ? (substr_count($key, ':') === 2 ? -1 : (int)substr($key, strrpos($key, ':') + 1)) : null;
+}
+sort($shardIndexes);
+same(true, $shardIndexes === [-1] || ($shardIndexes !== [] && $shardIndexes === range(0, count($shardIndexes) - 1)),
+    'the live Bloom filter is one legacy key or contiguous shards, with no stray key');
 $redis->del($filterKeys);
 $missing = lookup($user, ['shared']);
 same(false, $missing['status'] === 'ready', 'missing filter refuses result completeness');

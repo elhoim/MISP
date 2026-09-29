@@ -64,7 +64,10 @@ cli+=' -s /socket/redis.sock'
 ready=false
 for attempt in {1..45}; do
     # Ignore the temporary server used during MariaDB initialization.
-    if podman exec "$db_container" sh -c 'test "$(cat /proc/1/comm)" = mariadbd && mariadb-admin --socket=/run/mysqld/mysql.sock ping --silent' >/dev/null 2>&1 && \
+    if podman exec "$db_container" sh -c \
+        'test "$(cat /proc/1/comm)" = mariadbd &&
+         mariadb-admin --socket=/run/mysqld/mysql.sock ping --silent' \
+        >/dev/null 2>&1 && \
         podman exec "$redis_container" sh -c "$cli ping" >/dev/null 2>&1; then
         ready=true
         break
