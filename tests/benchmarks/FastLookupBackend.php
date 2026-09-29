@@ -1,13 +1,13 @@
 <?php
-/**
- * The server behind a benchmark's Redis connection: its name, version and
- * loaded modules ('bf' is the Bloom module on both Redis and Valkey).
- */
 function fastLookupIsFilterKey(string $key): bool
 {
     return preg_match('/^g:[^:]+:bf(:\d+)?$/', $key) === 1;
 }
 
+/**
+ * The server behind a benchmark's Redis connection: its name, version and
+ * loaded modules ('bf' is the Bloom module on both Redis and Valkey).
+ */
 function fastLookupBackendVersions($redis): array
 {
     $server = $redis->info('server');
