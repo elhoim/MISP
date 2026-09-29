@@ -54,6 +54,8 @@ class FastLookupIndexManager
     /** Share of IP attributes assumed to be ranges when sizing postings. */
     const IP_RANGE_SHARE = 0.05;
     const REBUILD_AT_CAPACITY = 0.8;
+    /** Automatic restarts in a row of a build that fills while nothing serves. */
+    const FULL_RESTARTS = 3;
     const REBUILD_AT_STALE = 0.1;
     /** Below this, stale entries cost too little to justify a rebuild. */
     const REBUILD_MIN_INSERTED = 10000;
@@ -699,6 +701,7 @@ class FastLookupIndexManager
             'scan_complete' => false,
             'started_at' => time(),
             'error' => null,
+            'full_restarts' => 0,
         ];
     }
 
@@ -722,11 +725,28 @@ class FastLookupIndexManager
             }
         }
         $total = array_sum($counts);
+        $capacity = max(FastLookupFilter::MIN_CAPACITY, (int)ceil(self::CAPACITY_HEADROOM * self::TOKENS_PER_ATTRIBUTE * $total));
+        // The formula counts attributes, not their tokens: what the live
+        // generation already holds is the better floor.
+        $inserted = $this->liveInserted();
         return [
-            'capacity' => max(FastLookupFilter::MIN_CAPACITY, (int)ceil(self::CAPACITY_HEADROOM * self::TOKENS_PER_ATTRIBUTE * $total)),
+            'capacity' => $inserted === null ? $capacity : max($capacity, 2 * $inserted),
             'range_entries' => $ranges,
             'total' => $total,
         ];
+    }
+
+    /** Tokens the live generation Redis holds; null when there is none or Redis cannot say. */
+    private function liveInserted(): ?int
+    {
+        try {
+            $metadata = $this->filter()->metadata();
+        } catch (Throwable $e) {
+            return null;
+        }
+        $live = $metadata['live'] ?? null;
+        $inserted = $live === null ? null : ($metadata['generations'][$live]['inserted'] ?? null);
+        return is_int($inserted) ? $inserted : null;
     }
 
     /** An automatically scheduled build is sized before the lock is taken. */
@@ -856,20 +876,33 @@ class FastLookupIndexManager
             return;
         }
         if ($build && $e->generation === $build['generation']) {
-            $this->attribute->log('The fast lookup rebuild filled its filter; resume it to retry at twice the capacity.', LOG_WARNING);
-            $state['build'] = self::failedBuild($build, true);
+            $state['build'] = $this->failedBuild($build, true, !empty($state['generation']));
             return;
         }
         throw $e;
     }
 
-    /** A build that filled its filter restarts at twice its capacity, or it would fill again. */
-    private static function failedBuild(array $build, bool $full): array
+    /**
+     * A build that filled its filter restarts at twice its capacity, or it
+     * would fill again. With nothing serving it restarts by itself, a few
+     * times in a row; beside a live generation it waits for a resume.
+     */
+    private function failedBuild(array $build, bool $full, bool $serving): array
     {
         $failed = array_merge($build, ['error' => self::BUILD_FAILED, 'reserved' => false,
             'cursor' => '0', 'processed' => 0, 'scan_complete' => false]);
-        if ($full) {
-            $failed['capacity'] = 2 * (int)$build['capacity'];
+        if (!$full) {
+            return $failed;
+        }
+        $failed['capacity'] = 2 * (int)$build['capacity'];
+        $restarts = (int)($build['full_restarts'] ?? 0);
+        if (!$serving && $restarts < self::FULL_RESTARTS) {
+            $failed['error'] = null;
+            $failed['full_restarts'] = $restarts + 1;
+            $this->attribute->log(sprintf('The fast lookup rebuild filled its filter while no index serves; it restarts at twice the capacity (%d of %d).',
+                $restarts + 1, self::FULL_RESTARTS), LOG_WARNING);
+        } else {
+            $this->attribute->log('The fast lookup rebuild filled its filter; resume it to retry at twice the capacity.', LOG_WARNING);
         }
         return $failed;
     }
@@ -1154,8 +1187,9 @@ class FastLookupIndexManager
                 if ($phase === 'build' && !empty($state['build'])) {
                     // The live generation keeps serving; the build restarts
                     // from scratch in a fresh generation after a resume.
-                    $state['build'] = self::failedBuild($state['build'],
-                        $e instanceof FastLookupIndexFullException && $e->generation === $state['build']['generation']);
+                    $state['build'] = $this->failedBuild($state['build'],
+                        $e instanceof FastLookupIndexFullException && $e->generation === $state['build']['generation'],
+                        !empty($state['generation']));
                 } else {
                     $state['error'] = 'The IOC index update failed. Resume the job, or rebuild if its checkpoint is stale.';
                 }

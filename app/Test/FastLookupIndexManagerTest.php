@@ -438,18 +438,161 @@ class FastLookupIndexManagerTest extends TestCase
         $this->assertSame('updating', $manager->status()['status']);
     }
 
-    /** Before manager(): add() answers like a full Redis filter for the generations in $full. */
+    /**
+     * Before manager(): add() answers like a full Redis filter for the
+     * generations in $full, and for any generation reserved below $needs,
+     * the capacity the indexed data needs. The attribute records its log.
+     */
     private function fillableFilter()
     {
+        $this->attribute = new class extends FastLookupLifecycleAttribute {
+            public $logs = [];
+            public function log($message, $level) { $this->logs[] = [$level, $message]; }
+        };
         $this->filter = new class extends FastLookupLifecycleFilter {
             public $full = [];
+            public $needs = 0;
             public function add($generation, array $prepared)
             {
-                if (isset($this->full[$generation])) { throw new FastLookupIndexFullException($generation); }
+                if (isset($this->full[$generation]) || ($this->generations[$generation]['info']['capacity'] ?? 0) < $this->needs) {
+                    throw new FastLookupIndexFullException($generation);
+                }
                 parent::add($generation, $prepared);
             }
         };
         $this->attribute->db->leaseFilter = $this->filter;
+    }
+
+    private function warnings(string $needle): int
+    {
+        return count(array_filter($this->attribute->logs, static function ($log) use ($needle) {
+            return $log[0] === LOG_WARNING && strpos($log[1], $needle) !== false;
+        }));
+    }
+
+    private function settle($manager, int $batches = 12): void
+    {
+        for ($i = 0; $i < $batches; $i++) {
+            $manager->runBatch(2);
+        }
+    }
+
+    public function testGrownIndexThatFillsServesAgainWithoutAnOperator()
+    {
+        $this->fillableFilter();
+        $manager = $this->ready();
+        $manager->startRebuild();
+        $capacity = $this->sqlState()['build']['capacity'];
+        // The data needs more than the formula predicts: the rebuild fills and waits beside the live generation.
+        $this->filter->needs = 2 * $capacity;
+        $this->assertSame(FastLookupIndexManager::BUILD_FAILED, $manager->runBatch(2)['build']['error']);
+        $manager->resume();
+        $this->settle($manager);
+        $grown = $this->filter->meta['live'];
+        $this->assertSame('ready', $manager->status()['status']);
+        $this->assertSame(2 * $capacity, end($this->filter->reserved)['capacity']);
+
+        $this->filter->generations[$grown]['info']['inserted'] = (int)(1.5 * $capacity);
+        $this->filter->needs = 3 * $capacity;
+        FastLookupIndexManager::recordChange($this->attribute, '1');
+        $this->assertNotSame('ready', $manager->processPending()['status']);
+        $before = count($this->filter->reserved);
+        $this->settle($manager);
+        $this->assertSame('ready', $manager->status()['status'], 'No operator was needed.');
+        $this->assertNotSame($grown, $this->filter->meta['live']);
+        $this->assertSame(3 * $capacity, $this->filter->reserved[$before]['capacity'], 'Twice what the live generation held.');
+        $this->assertCount($before + 1, $this->filter->reserved, 'The replacement fit the first time.');
+        $this->assertFalse($this->queued('1'));
+    }
+
+    public function testRebuildsAreSizedFromWhatTheLiveGenerationHolds()
+    {
+        $manager = $this->ready();
+        $live = $this->filter->meta['live'];
+        $capacity = $this->liveInfo()['capacity'];
+        $this->filter->generations[$live]['info']['inserted'] = (int)(0.9 * $capacity);
+        FastLookupIndexManager::recordChange($this->attribute, '1');
+        $manager->processPending();
+        $this->assertNotEmpty($manager->status()['build'], 'A rebuild is scheduled at 80%.');
+        $manager->runBatch(2);
+        $this->assertSame(2 * (int)(0.9 * $capacity), end($this->filter->reserved)['capacity']);
+
+        $this->settle($manager);
+        $live = $this->filter->meta['live'];
+        $this->filter->generations[$live]['info']['inserted'] = (int)(0.7 * $capacity);
+        $manager->startRebuild();
+        $this->assertSame(2 * (int)(0.7 * $capacity), end($this->filter->reserved)['capacity'], 'An operator rebuild too.');
+    }
+
+    public function testBuildFillingWithNothingServingRestartsThreeTimesThenWaits()
+    {
+        $this->fillableFilter();
+        $this->seed();
+        $manager = $this->manager();
+        $this->filter->needs = PHP_INT_MAX;
+        $manager->startRebuild();
+        $this->settle($manager);
+        $capacity = FastLookupIndexManager::MIN_CAPACITY;
+        $this->assertSame([$capacity, 2 * $capacity, 4 * $capacity, 8 * $capacity], array_column($this->filter->reserved, 'capacity'));
+        $build = $this->sqlState()['build'];
+        $this->assertSame(FastLookupIndexManager::BUILD_FAILED, $build['error']);
+        $this->assertSame(3, $build['full_restarts']);
+        $this->assertSame(16 * $capacity, $build['capacity']);
+        $this->assertSame(3, $this->warnings('restarts at twice the capacity'));
+        $this->assertSame(1, $this->warnings('resume it to retry'));
+        $this->settle($manager);
+        $this->assertCount(4, $this->filter->reserved, 'The fourth failure waits for an operator.');
+        $manager->resume();
+        $this->filter->needs = 0;
+        $this->settle($manager);
+        $this->assertSame('ready', $manager->status()['status']);
+        $this->assertSame(16 * $capacity, end($this->filter->reserved)['capacity']);
+    }
+
+    public function testAutomaticRestartsStartOverOnceABuildActivates()
+    {
+        $this->fillableFilter();
+        $this->seed();
+        $manager = $this->manager();
+        $capacity = FastLookupIndexManager::MIN_CAPACITY;
+        $this->filter->needs = 2 * $capacity;
+        $manager->startRebuild();
+        $this->settle($manager);
+        $this->assertSame('ready', $manager->status()['status'], 'One restart at twice the capacity fits.');
+        $this->assertNull($this->sqlState()['build']);
+        $this->assertSame(1, $this->warnings('restarts at twice the capacity'));
+
+        $this->filter->needs = PHP_INT_MAX;
+        FastLookupIndexManager::recordChange($this->attribute, '1');
+        $before = count($this->filter->reserved);
+        $manager->processPending();
+        $this->settle($manager);
+        $this->assertCount($before + 4, $this->filter->reserved, 'Three restarts again, then it waits.');
+        $this->assertSame(4, $this->warnings('restarts at twice the capacity'));
+        $this->assertSame(FastLookupIndexManager::BUILD_FAILED, $this->sqlState()['build']['error']);
+    }
+
+    public function testLiveFilterFillingBesideAHealthyBuildTurnsItIntoTheFirstBuild()
+    {
+        $this->fillableFilter();
+        $manager = $this->ready();
+        $full = $this->filter->meta['live'];
+        $manager->startRebuild();
+        $building = $this->filter->meta['building'];
+        $this->filter->full[$full] = true;
+        FastLookupIndexManager::recordChange($this->attribute, '1');
+        $this->assertNotSame('ready', $manager->processPending()['status']);
+        $state = $this->sqlState();
+        $this->assertNull($state['generation']);
+        $this->assertSame($building, $state['build']['generation'], 'The healthy build is kept.');
+        $this->assertTrue($state['build']['reserved']);
+        $this->assertNull($state['build']['error']);
+        $this->assertTrue($this->queued('1'));
+        $this->settle($manager);
+        $this->assertSame('ready', $manager->status()['status']);
+        $this->assertSame($building, $this->filter->meta['live']);
+        $this->assertFalse($this->queued('1'));
+        $this->assertSame(['10', '20'], $this->filter->liveIds());
     }
 
     private function queued(string $eventId): bool

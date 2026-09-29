@@ -102,25 +102,27 @@ compact exact/network/domain tokens. `FastLookupFilter` owns Redis data;
 Redis holds one Bloom filter per generation (key prefix
 `misp:fast_lookup:bf1:<sha256(namespace)>:`, no TTL) holding every exact, range
 and domain token, sized to `max(1,000,000, 1.5 × 2 × in-scope attributes)`: two
-tokens per attribute headroom at 1.5x, with a 1,000,000-token floor. The filter
-is split into S `NONSCALING` shards `g:<generation>:bf:<i>`, where S = max(1,
-⌈estimated bytes / 64 MiB⌉) and estimated bytes = capacity × −ln(rate) / ln(2)²
-/ 8. Each shard reserves ⌈capacity / S⌉ at the configured rate, so every shard
-keeps that false-positive rate. A token's shard is its digest bytes 4–7 modulo
-S; its posting bucket uses bytes 0–3. valkey-bloom refuses a Bloom object over
-128 MiB by default (`bf.bloom-memory-usage-limit`), which a single filter
-reaches at about 25M in-scope attributes; 64 MiB shards stay under it with no
+tokens per attribute headroom at 1.5x, with a 1,000,000-token floor, and never
+less than twice the tokens the live generation holds. The filter is split into S
+`NONSCALING` shards `g:<generation>:bf:<i>`, where S = max(1, ⌈estimated bytes /
+64 MiB⌉) and estimated bytes = capacity × −ln(rate) / ln(2)² / 8. Each shard
+reserves ⌈capacity / S⌉ at the configured rate, so every shard keeps that
+false-positive rate. A token's shard is its digest bytes 4–7 modulo S; its
+posting bucket uses bytes 0–3. valkey-bloom refuses a Bloom object over 128 MiB
+by default (`bf.bloom-memory-usage-limit`), which a single filter reaches at
+about 25M in-scope attributes; 64 MiB shards stay under it with no
 configuration. The info hash records the shard count (`shards`) and the filter
 type (`bloom_type`); a generation built before sharding has one filter
 `g:<generation>:bf` and neither field, and is served as it is. A full shard
 refuses further tokens, and the write fails closed rather than dropping them: a
 full live generation stops serving, answering 503 until a scheduled rebuild
-replaces it, and a full rebuild fails and restarts at twice its capacity when
-resumed. `BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter cannot
-rule out still goes to SQL for exact values, or reads its postings for
-range/domain values, which SQL then revalidates. Range and domain attribute IDs
-live in listpack-sized bucket hashes (about 64 fields per bucket); a posting
-over 64 bytes moves out to an overflow key `<bucket>:<hex token>` holding
+replaces it, and a full rebuild restarts at twice its capacity: by itself up to
+three times in a row while nothing serves, otherwise when resumed.
+`BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter cannot rule out
+still goes to SQL for exact values, or reads its postings for range/domain
+values, which SQL then revalidates. Range and domain attribute IDs live in
+listpack-sized bucket hashes (about 64 fields per bucket); a posting over 64
+bytes moves out to an overflow key `<bucket>:<hex token>` holding
 `<generation>|<ids>`, capped at 8 MiB and 500,000 IDs, so one popular value
 never inflates its bucket. Edits and deletions leave stale filter entries behind
 — the filter only grows, so a removed or changed value's old token is never
