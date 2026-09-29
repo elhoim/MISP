@@ -180,7 +180,7 @@ class FastLookupIndexManager
         } catch (Throwable $e) {
             $result['status'] = 'unavailable';
             $result['message'] = [
-                'missing' => 'Fast lookup requires the RedisBloom module (Redis 8 or Redis Stack).',
+                'missing' => 'Fast lookup requires a Bloom filter module: RedisBloom on Redis 8 or Redis Stack, or valkey-bloom on Valkey 8.1 or later.',
                 'unreachable' => 'The IOC index is unavailable: Redis cannot be reached. Its SQL queue has been retained.',
             ][$this->moduleState() ?? ''] ?? 'The IOC index is unavailable. Its SQL queue has been retained.';
             $this->logFailure($e);

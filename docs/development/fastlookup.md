@@ -13,12 +13,12 @@ or Redis Stack (RedisBloom), or Valkey 8.1 or later with valkey-bloom, for
 example the `valkey/valkey-bundle` image. The index needs no configuration to
 use either: each generation records the filter type it was built with, and a
 filter of any other type fails closed. Without a module the endpoint answers
-HTTP 503 with `Fast lookup requires
-the RedisBloom module (Redis 8 or Redis Stack).`. When Redis cannot be reached
-at all, the 503 message says so instead (`The IOC index is unavailable: Redis
-cannot be reached. Its SQL queue has been retained.`), so an outage is not
-mistaken for a missing module. The
-index only supports MySQL/MariaDB.
+HTTP 503 with `Fast lookup requires a Bloom filter module: RedisBloom on Redis
+8 or Redis Stack, or valkey-bloom on Valkey 8.1 or later.`. When Redis cannot
+be reached at all, the 503 message says so instead (`The IOC index is
+unavailable: Redis cannot be reached. Its SQL queue has been retained.`), so an
+outage is not mistaken for a missing module. The index only supports
+MySQL/MariaDB.
 
 Redis Cluster and Valkey cluster mode are not supported: every index script
 touches several keys of one generation.

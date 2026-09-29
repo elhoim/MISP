@@ -369,7 +369,7 @@ class FastLookupIndexManagerTest extends TestCase
         $this->filter->moduleAvailable = false;
         $status = $manager->status();
         $this->assertSame('unavailable', $status['status']);
-        $this->assertSame('Fast lookup requires the RedisBloom module (Redis 8 or Redis Stack).', $status['message']);
+        $this->assertSame('Fast lookup requires a Bloom filter module: RedisBloom on Redis 8 or Redis Stack, or valkey-bloom on Valkey 8.1 or later.', $status['message']);
     }
 
     public function testUnreachableRedisIsNotReportedAsAMissingModule()
