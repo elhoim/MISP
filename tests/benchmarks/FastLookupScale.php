@@ -333,7 +333,8 @@ do {
     $keys = $redis->scan($cursor, $namespace . '*', 1000) ?: [];
     foreach ($keys as $key) {
         $rest = substr($key, strlen($namespace));
-        if (fastLookupIsFilterKey($rest)) {
+        if (fastLookupIsFilterKey($rest)
+            || preg_match('/^g:[^:]+:bm:\d+$/', $rest)) {
             $class = 'bloom_filter';
         } elseif (preg_match('/^g:[^:]+:(info|x:\d+:[0-9a-f]+|x:\d+)$/', $rest, $m)) {
             if ($m[1] === 'info') {
