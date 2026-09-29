@@ -117,12 +117,14 @@ type (`bloom_type`); a generation built before sharding has one filter
 refuses further tokens, and the write fails closed rather than dropping them: a
 full live generation stops serving, answering 503 until a scheduled rebuild
 replaces it, and a full rebuild restarts at twice its capacity: by itself up to
-three times in a row while nothing serves, otherwise when resumed.
-`BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter cannot rule out
-still goes to SQL for exact values, or reads its postings for range/domain
-values, which SQL then revalidates. Range and domain attribute IDs live in
-listpack-sized bucket hashes (about 64 fields per bucket); a posting over 64
-bytes moves out to an overflow key `<bucket>:<hex token>` holding
+three times in a row while nothing serves, otherwise when resumed. A generation
+whose inserted count reaches its reserved capacity counts as full even when no
+add was refused, since earlier releases dropped the tokens a full filter refused
+without noticing. `BF.MEXISTS`/`BF.MADD` only prove absence; a token the filter
+cannot rule out still goes to SQL for exact values, or reads its postings for
+range/domain values, which SQL then revalidates. Range and domain attribute IDs
+live in listpack-sized bucket hashes (about 64 fields per bucket); a posting
+over 64 bytes moves out to an overflow key `<bucket>:<hex token>` holding
 `<generation>|<ids>`, capped at 8 MiB and 500,000 IDs, so one popular value
 never inflates its bucket. Edits and deletions leave stale filter entries behind
 — the filter only grows, so a removed or changed value's old token is never
@@ -204,14 +206,17 @@ and a second change answers 503. Requests without range tokens never check
 every prefix length, and adding to it never creates them. Masks present on
 only some of the three fields, or malformed, make the generation corrupt.
 
-Reserving a generation stamps the namespace metadata schema: `bloom-2` added
-the IP prefix masks and `bloom-3` the sharded filters. Earlier releases know
-only the older values and fail closed on a newer one rather than writing a
-generation they cannot read; `bloom-1` and `bloom-2` namespaces keep being
-served until the next rebuild replaces their generation. All MISP servers
-sharing one Redis must run the same release: after a downgrade the older
-release treats the index as invalid and rebuilds it from scratch, and so does
-the newer release after upgrading again.
+Reserving a generation stamps the namespace metadata schema: `bloom-2` added the
+IP prefix masks and `bloom-3` the sharded filters. Earlier releases know only
+the older values and fail closed on a newer one rather than writing a generation
+they cannot read; `bloom-1` and `bloom-2` namespaces keep being served until the
+next rebuild replaces their generation. All MISP servers sharing one Redis must
+run the same release: after a downgrade the older release treats the index as
+invalid and rebuilds it from scratch, and so does the newer release after
+upgrading again. Upgrade every node together: a partial rollout looks healthy
+until the first rebuild, which can be days later, because only reserving a
+generation stamps `bloom-3`; from then on older nodes answer 503 and older
+workers fight over the namespace.
 
 Redis persistence and a suitable memory policy are operationally important: no
 fastLookup key expires except the worker lease. Evicted or lost keys cause

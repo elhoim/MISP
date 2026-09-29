@@ -211,7 +211,7 @@ class FastLookupIndexManager
             $info = $metadata['generations'][$live];
             $result['filter'] = [
                 'capacity' => $info['capacity'],
-                'reserved_capacity' => isset($info['shards']) ? FastLookupFilter::reservedCapacity($info['capacity'], $info['shards']) : $info['capacity'],
+                'reserved_capacity' => self::reservedCapacity($info),
                 'rate' => $info['rate'],
                 'inserted' => $info['inserted'],
                 'stale' => $info['stale'],
@@ -486,6 +486,12 @@ class FastLookupIndexManager
             // recoverActivation() completes the swap if that commit never lands.
             $this->filter()->activate($build['generation'], $build['fingerprint']);
             $this->completeActivation($state);
+        }
+        if ($this->serving($state) && $this->liveFilterFull($state['generation'])) {
+            $this->replaceFullGeneration($state, new FastLookupIndexFullException($state['generation']));
+            if (!$staged) {
+                $this->filter()->checkpoint($state['revision'], false);
+            }
         }
         if ($staged) {
             // Never publish the in-progress revision as committed: a Redis
@@ -865,6 +871,24 @@ class FastLookupIndexManager
         }
     }
 
+    /** A live generation of the configured scope answers lookups; one of an older scope does not. */
+    private function serving(array $state): bool
+    {
+        return !empty($state['generation']) && $state['fingerprint'] === FastLookupConfig::fingerprint($this->attribute);
+    }
+
+    private function liveFilterFull(string $generation): bool
+    {
+        $info = $this->filter()->metadata()['generations'][$generation] ?? null;
+        return $info !== null && $info['inserted'] >= self::reservedCapacity($info);
+    }
+
+    /** FastLookupFilter::reservedCapacity(); a generation without shards reserves its capacity. */
+    private static function reservedCapacity(array $info): int
+    {
+        return isset($info['shards']) ? FastLookupFilter::reservedCapacity($info['capacity'], $info['shards']) : $info['capacity'];
+    }
+
     private function replaceFullGeneration(array &$state, FastLookupIndexFullException $e): void
     {
         $build = $state['build'] ?? null;
@@ -882,7 +906,7 @@ class FastLookupIndexManager
             return;
         }
         if ($build && $e->generation === $build['generation']) {
-            $state['build'] = $this->failedBuild($build, true, !empty($state['generation']));
+            $state['build'] = $this->failedBuild($build, true, $this->serving($state));
             return;
         }
         throw $e;
@@ -1191,11 +1215,11 @@ class FastLookupIndexManager
             }
             if ($state) {
                 if ($phase === 'build' && !empty($state['build'])) {
-                    // The live generation keeps serving; the build restarts
-                    // from scratch in a fresh generation after a resume.
+                    // The build restarts from scratch in a fresh generation
+                    // (failedBuild says when it waits for a resume).
                     $state['build'] = $this->failedBuild($state['build'],
                         $e instanceof FastLookupIndexFullException && $e->generation === $state['build']['generation'],
-                        !empty($state['generation']));
+                        $this->serving($state));
                 } else {
                     $state['error'] = 'The IOC index update failed. Resume the job, or rebuild if its checkpoint is stale.';
                 }

@@ -910,6 +910,29 @@ class FastLookupFilterTest extends TestCase
         $this->assertSame(300, $stats['filter_bytes'], 'Every shard is measured.');
     }
 
+    public function testFilterIsFullAtItsReservedCapacity(): void
+    {
+        $this->assertFalse(FastLookupFilter::filterFull(1000, null, 999));
+        $this->assertTrue(FastLookupFilter::filterFull(1000, null, 1000));
+        $this->assertFalse(FastLookupFilter::filterFull(1000, 3, 1001), 'Three shards reserve 1002.');
+        $this->assertTrue(FastLookupFilter::filterFull(1000, 3, 1002));
+    }
+
+    public function testCandidatesRefuseAFullGenerationBeforeProbing(): void
+    {
+        $redis = $this->scriptedRedis([
+            'hGetAll' => ['live' => 'live1', 'fingerprint' => 'f'] + $this->validMetadataFields(),
+            'hMGet' => ['!' => 'live1', 'shards' => false, 'bloom_type' => false],
+        ], ["'capacity', 'rate', 'inserted'" => ['1000', '0.001', '1000', '0', '1', '0', false, false, false]]);
+        try {
+            $this->filter(null, $redis)->candidates('live1', [[['token' => $this->shardedToken(1), 'kind' => 'exact']]]);
+            $this->fail('A full generation must never answer.');
+        } catch (FastLookupIndexFullException $e) {
+            $this->assertSame('live1', $e->generation);
+        }
+        $this->assertSame([], array_filter($redis->evals, function ($eval) { return strpos($eval[0], 'BF.MEXISTS') !== false; }));
+    }
+
     public function testCandidatesProbeEachTokenInItsShard(): void
     {
         [$t4, $t7, $t10] = [$this->shardedToken(4), $this->shardedToken(7), $this->shardedToken(10)];

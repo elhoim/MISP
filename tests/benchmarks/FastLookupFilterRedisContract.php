@@ -544,6 +544,26 @@ try {
     $absent = array_filter($tiny->candidates('full', $plan), static function ($row) { return !$row['exact']; });
     $assert(count($accepted) > 0 && !$absent, 'No token taken before the refusal reads absent: ' . count($absent) . ' of ' . count($accepted));
 
+    // A legacy filter an earlier release filled may have dropped tokens silently: at its capacity it never answers.
+    $sharded->reserve('legacyfull', str_repeat('v', 64), 1000, 0.01, 1);
+    $legacyInfo = $shardedPrefix . 'g:legacyfull:info';
+    $redis->rename($shardedPrefix . 'g:legacyfull:bf:0', $shardedPrefix . 'g:legacyfull:bf');
+    $redis->hDel($legacyInfo, 'shards', 'bloom_type');
+    $legacyProbe = [[['token' => $token('E', 'legacy-full'), 'kind' => 'exact']]];
+    $sharded->add('legacyfull', [['id' => '1', 'type' => 'domain', 'tokens' => [$legacyProbe[0][0]['token']]]]);
+    $sharded->checkpoint('lf-r1', false);
+    $sharded->activate('legacyfull', str_repeat('v', 64));
+    $sharded->checkpoint('lf-r2', true);
+    $assert($sharded->metadata()['generations']['legacyfull']['shards'] === null, 'The generation is a legacy single filter');
+    $assert($sharded->candidates('legacyfull', $legacyProbe)[0]['exact'] === true, 'A legacy filter below its capacity answers');
+    $redis->hSet($legacyInfo, 'inserted', '1000');
+    try {
+        $sharded->candidates('legacyfull', $legacyProbe);
+        $assert(false, 'A legacy filter at its capacity must never answer');
+    } catch (FastLookupIndexFullException $e) {
+        $assert($e->generation === 'legacyfull', 'A legacy filter at its capacity fails the lookup as full');
+    }
+
     // Default shards keep a large filter under valkey-bloom's 128 MiB object limit.
     $big = new FastLookupFilter($bigNamespace, $scope, $proxy);
     $big->reserve('big', str_repeat('b', 64), 40000000, 0.001, 1);

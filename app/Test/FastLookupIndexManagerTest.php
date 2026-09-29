@@ -610,6 +610,36 @@ class FastLookupIndexManagerTest extends TestCase
         $this->assertSame(FastLookupIndexManager::BUILD_FAILED, $this->sqlState()['build']['error']);
     }
 
+    public function testLiveFilterAlreadyAtCapacityStopsServing()
+    {
+        $manager = $this->ready();
+        $full = $this->filter->meta['live'];
+        // What an earlier release leaves behind: it never reported the tokens a full filter dropped.
+        $this->filter->generations[$full]['info']['inserted'] = $this->liveInfo()['capacity'];
+        $this->assertNotSame('ready', $manager->processPending()['status']);
+        $this->assertFalse($this->filter->meta['ready']);
+        $state = $this->sqlState();
+        $this->assertNull($state['generation']);
+        $this->assertNotEmpty($state['build'], 'A rebuild is scheduled.');
+        $this->settle($manager);
+        $this->assertSame('ready', $manager->status()['status']);
+        $this->assertNotSame($full, $this->filter->meta['live']);
+    }
+
+    public function testBuildFillingAfterAScopeChangeRestartsByItself()
+    {
+        $this->fillableFilter();
+        $manager = $this->ready();
+        FastLookupConfig::$fingerprint = 'new-scope';
+        $this->filter->needs = PHP_INT_MAX;
+        $manager->startRebuild();
+        $this->assertNotEmpty($this->sqlState()['generation'], 'The old scope generation is still recorded.');
+        $before = count($this->filter->reserved) - 1;
+        $this->settle($manager);
+        $this->assertCount($before + 4, $this->filter->reserved, 'Nothing serves the new scope, so the build restarts three times.');
+        $this->assertSame(3, $this->warnings('restarts at twice the capacity'));
+    }
+
     public function testLiveFilterFillingBesideAHealthyBuildTurnsItIntoTheFirstBuild()
     {
         $this->fillableFilter();

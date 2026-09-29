@@ -158,6 +158,15 @@ class FastLookupFilter
         return $shards === null ? $capacity : $shards * self::shardCapacity($capacity, $shards);
     }
 
+    /**
+     * A filter at its reserved capacity may have lost tokens: an earlier
+     * release did not report the adds a full filter refused.
+     */
+    public static function filterFull(int $capacity, ?int $shards, int $inserted): bool
+    {
+        return $inserted >= self::reservedCapacity($capacity, $shards);
+    }
+
     /** Digest bytes 4-7; the posting bucket uses bytes 0-3. */
     public static function shardOf(string $token, int $shards): int
     {
@@ -545,6 +554,9 @@ LUA
             throw new FastLookupIndexUnavailableException('The fastLookup index is not ready for this generation.');
         }
         $info = $before['generations'][$generation];
+        if (self::filterFull($info['capacity'], $info['shards'], $info['inserted'])) {
+            throw new FastLookupIndexFullException($generation);
+        }
         $buckets = $info['buckets'];
         $filterKeys = $this->filterKeys($generation, $info['shards']);
         $shards = count($filterKeys);
