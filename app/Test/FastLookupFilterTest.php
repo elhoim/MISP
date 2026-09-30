@@ -33,7 +33,7 @@ class FastLookupFilterTest extends TestCase
         };
     }
 
-    private function filter($scope = null, $redis = null, int $shardBytes = FastLookupFilter::SHARD_BYTES)
+    private function filter($scope = null, $redis = null, ?int $shardBytes = null)
     {
         return new FastLookupFilter('test-database', $scope ?? ['attribute_types' => ['domain'], 'published_only' => true],
             $redis ?? $this->disconnected(), $shardBytes);
@@ -545,7 +545,7 @@ class FastLookupFilterTest extends TestCase
         } catch (FastLookupIndexUnavailableException $e) {
             $this->assertNotInstanceOf(FastLookupIndexCorruptException::class, $e);
         }
-        $this->assertSame(['hGetAll'], $redis->calls, 'Nothing was deleted, reset or reserved.');
+        $this->assertSame(['rawCommand', 'hGetAll'], $redis->calls, 'Nothing was deleted, reset or reserved.');
     }
 
     public function testMissingMetadataDuringReserveStartsACleanNamespace(): void
@@ -556,7 +556,7 @@ class FastLookupFilterTest extends TestCase
         } catch (FastLookupIndexUnavailableException $e) {
             // The double's SCAN cursor never ends the cleanup; the reset already happened.
         }
-        $this->assertSame(['hGetAll', 'del', 'hMSet'], array_slice($redis->calls, 0, 3));
+        $this->assertSame(['rawCommand', 'hGetAll', 'del', 'hMSet'], array_slice($redis->calls, 0, 4));
     }
 
     // -- IP prefix lengths -----------------------------------------------------
@@ -788,6 +788,141 @@ class FastLookupFilterTest extends TestCase
         $this->assertSame(['2', '1000000'], array_slice($arguments, $keyCount + 6, 2));
         $this->assertStringContainsString("'shards', ARGV[7], 'bloom_type', bloomType", $script);
         $this->assertStringContainsString("for j = 3, i do redis.call('DEL', KEYS[j]) end", $script);
+    }
+
+    public function testShardBytesFollowTheServerLimit(): void
+    {
+        $this->assertSame(120795955, FastLookupFilter::shardBytesFor(134217728));
+        $this->assertSame(241591910, FastLookupFilter::shardBytesFor(268435456));
+        $this->assertSame(30198988, FastLookupFilter::shardBytesFor(33554432), 'A limit below 64 MiB gives smaller shards.');
+        $this->assertSame(1, FastLookupFilter::shardBytesFor(1));
+        $this->assertSame(FastLookupFilter::SHARD_BYTES, FastLookupFilter::shardBytesFor(null));
+    }
+
+    public function testRecommendedMemoryLimitFitsTheFilterInOneShardInWholeMiB(): void
+    {
+        $mib = 1048576;
+        $capacity = 135000000;
+        $bytes = FastLookupFilter::estimatedFilterBytes($capacity, 0.001);
+        $limit = FastLookupFilter::recommendedMemoryLimit($capacity, 0.001);
+        $this->assertSame((int)ceil($bytes / 0.9 / $mib) * $mib, $limit);
+        $this->assertSame(0, $limit % $mib);
+        $this->assertGreaterThan($bytes, $limit);
+        $this->assertSame(1, FastLookupFilter::shardCount($capacity, 0.001, FastLookupFilter::shardBytesFor($limit)));
+        $this->assertSame(2, FastLookupFilter::shardCount($capacity, 0.001, FastLookupFilter::shardBytesFor($limit - $mib)), 'No smaller whole-MiB limit fits.');
+        $this->assertSame(1, FastLookupFilter::shardCount($capacity * 10, 0.0001, FastLookupFilter::shardBytesFor(FastLookupFilter::recommendedMemoryLimit($capacity * 10, 0.0001))));
+    }
+
+    public function testRecommendedMemoryLimitIsNeverBelowTheDefault(): void
+    {
+        $this->assertSame(134217728, FastLookupFilter::DEFAULT_MEMORY_LIMIT);
+        $this->assertSame(134217728, FastLookupFilter::recommendedMemoryLimit(1, 0.05));
+        $this->assertSame(134217728, FastLookupFilter::recommendedMemoryLimit(FastLookupFilter::MIN_CAPACITY, 0.001));
+        $this->assertSame(134217728, FastLookupFilter::recommendedMemoryLimit(60000000, 0.001));
+        $this->assertGreaterThan(134217728, FastLookupFilter::recommendedMemoryLimit(70000000, 0.001));
+    }
+
+    /** The shard count reserve() records for $capacity at 0.001 against a double answering CONFIG GET with $reply. */
+    private function reservedShards($reply, int $capacity, ?int $shardBytes = null): int
+    {
+        $redis = $this->recordingRedis(['hGetAll' => $this->validMetadataFields(), 'eval' => 1, 'scan' => [], 'rawCommand' => $reply]);
+        try {
+            $this->filter(null, $redis, $shardBytes)->reserve('next', 'fingerprint', $capacity, 0.001, 1);
+        } catch (FastLookupIndexUnavailableException $e) {
+            // The double's SCAN cursor never ends the cleanup.
+        }
+        $reserve = array_values(array_filter($redis->arguments, function ($call) {
+            return $call[0] === 'eval' && strpos($call[1][0], 'BF.RESERVE') !== false;
+        }));
+        [, $arguments, $keyCount] = $reserve[0][1];
+        return (int)$arguments[$keyCount + 6];
+    }
+
+    public function testReserveDerivesTheShardSizeFromTheServerLimit(): void
+    {
+        $limit = static function (int $bytes) { return ['bf.bloom-memory-usage-limit', (string)$bytes]; };
+        $this->assertSame(1, $this->reservedShards($limit(268435456), 60000000), 'About 108 MB fits one shard under a 256 MiB limit.');
+        $this->assertSame(1, $this->reservedShards($limit(33554432), 10000000));
+        $this->assertSame(2, $this->reservedShards($limit(33554432), 20000000), 'A limit below 64 MiB takes more, smaller shards.');
+        $this->assertSame(2, $this->reservedShards($limit(134217728), 80000000));
+    }
+
+    /** @dataProvider unreadableLimits */
+    public function testReserveKeeps64MiBShardsWithoutAReadableLimit($reply): void
+    {
+        $this->assertSame(1, $this->reservedShards($reply, 37000000));
+        $this->assertSame(2, $this->reservedShards($reply, 40000000));
+    }
+
+    public function unreadableLimits(): array
+    {
+        return [
+            'RedisBloom' => [[]],
+            'error reply' => [false],
+            'renamed CONFIG' => [new RuntimeException("ERR unknown command 'CONFIG'")],
+            'zero' => [['bf.bloom-memory-usage-limit', '0']],
+            'not a number' => [['bf.bloom-memory-usage-limit', 'lots']],
+            'another setting' => [['maxmemory', '268435456']],
+        ];
+    }
+
+    public function testExplicitShardBytesOverrideTheServerLimit(): void
+    {
+        $this->assertSame(2, $this->reservedShards(['bf.bloom-memory-usage-limit', '268435456'], 1000000, 1 << 20));
+        $this->expectException(OverflowException::class);
+        $this->reservedShards(['bf.bloom-memory-usage-limit', '268435456'], 60000000, 1024);
+    }
+
+    public function testATinyLimitFailsTheReserveBeforeCreatingAnything(): void
+    {
+        $redis = $this->recordingRedis(['rawCommand' => ['bf.bloom-memory-usage-limit', '1024']]);
+        try {
+            $this->filter(null, $redis)->reserve('next', 'fingerprint', 60000000, 0.001, 1);
+            $this->fail('More than the maximum shards must fail the reserve.');
+        } catch (OverflowException $e) {
+        }
+        $this->assertSame(['rawCommand'], $redis->calls);
+    }
+
+    public function testLookupsNeverReadTheServerLimit(): void
+    {
+        $redis = $this->recordingRedis(['hGetAll' => ['live' => 'live1'] + $this->validMetadataFields(),
+            'hMGet' => ['!' => 'live1', 'shards' => '1', 'bloom_type' => 'bloomfltr'], 'eval' => $this->generationState([false, false, false])]);
+        $this->filter(null, $redis)->metadata();
+        $this->assertNotContains('rawCommand', $redis->calls);
+    }
+
+    public function testMemoryLimitReadsTheValkeySetting(): void
+    {
+        $redis = $this->recordingRedis(['rawCommand' => ['bf.bloom-memory-usage-limit', '134217728']]);
+        $this->assertSame(134217728, $this->filter(null, $redis)->memoryLimit());
+        $this->assertSame([['rawCommand', ['CONFIG', 'GET', 'bf.bloom-memory-usage-limit']]], $redis->arguments);
+    }
+
+    /** @dataProvider unreadableLimits */
+    public function testUnreadableMemoryLimitIsUnavailableAndAMissingOneNull($reply): void
+    {
+        if ($reply === []) {
+            $this->assertNull($this->filter(null, $this->recordingRedis(['rawCommand' => $reply]))->memoryLimit());
+            return;
+        }
+        $this->expectException(FastLookupIndexUnavailableException::class);
+        $this->filter(null, $this->recordingRedis(['rawCommand' => $reply]))->memoryLimit();
+    }
+
+    public function testSetMemoryLimitSetsItAtRuntime(): void
+    {
+        $redis = $this->recordingRedis(['rawCommand' => true]);
+        $this->filter(null, $redis)->setMemoryLimit(268435456);
+        $this->assertContains(['rawCommand', ['CONFIG', 'SET', 'bf.bloom-memory-usage-limit', '268435456']], $redis->arguments);
+    }
+
+    public function testRefusedMemoryLimitIsUnavailable(): void
+    {
+        $this->expectException(FastLookupIndexUnavailableException::class);
+        $this->expectExceptionMessage('argument couldn\'t be parsed');
+        $this->filter(null, $this->recordingRedis(['rawCommand' => false, 'getLastError' => "ERR CONFIG SET failed - argument couldn't be parsed into an integer"]))
+            ->setMemoryLimit(268435456);
     }
 
     public function testLegacyGenerationReadsItsUnshardedFilter(): void

@@ -23,6 +23,47 @@ MySQL/MariaDB.
 Redis Cluster and Valkey cluster mode are not supported: every index script
 touches several keys of one generation.
 
+## Valkey setup
+
+Valkey needs no configuration: under valkey-bloom's default
+`bf.bloom-memory-usage-limit` of 128 MiB the filter is split into shards
+that fit it. A larger limit gives fewer shards, so the recommended step is to
+size the limit for the instance:
+
+```bash
+app/Console/cake Admin valkeyMemoryLimit
+app/Console/cake Admin valkeyMemoryLimit --apply
+```
+
+The command counts the in-scope attributes and prints the filter capacity a
+rebuild would reserve at 150% of that count, the
+`bf.bloom-memory-usage-limit` that holds it in one shard (at least 128 MiB,
+rounded up to whole MiB), the server's current value, and whether it is
+already sufficient. It then prints the commands to apply it:
+
+```text
+CONFIG SET bf.bloom-memory-usage-limit <bytes>
+```
+
+at runtime, and for a persistent setting either the `valkey.conf` line
+
+```text
+bf.bloom-memory-usage-limit <bytes>
+```
+
+or the server argument `--bf.bloom-memory-usage-limit <bytes>`. `--apply`
+runs the `CONFIG SET` itself. It never lowers a larger limit, and the change
+does not survive a restart unless the configuration file is updated too.
+Always set it persistently, on every replica as well: valkey-bloom refuses to
+load a filter larger than its current limit (`RESTORE` answers `ERR Bad data
+format`), so a server restarted, or a replica synced, with a lower limit
+cannot load shards built under the higher one. On Redis with RedisBloom, which
+has no such setting, the command says so and changes nothing.
+
+Set the limit before the first build. On an existing index, the new limit
+applies from the next generation, so run `rebuildFastLookup` afterwards.
+Re-run the step as the instance grows.
+
 ## Configuration and operation
 
 | Setting | Default | Effect |
@@ -105,14 +146,17 @@ and domain token, sized to `max(1,000,000, 1.5 × 2 × in-scope attributes)`: tw
 tokens per attribute headroom at 1.5x, with a 1,000,000-token floor, and never
 less than twice the tokens the live generation holds. The filter is split into S
 `NONSCALING` shards `g:<generation>:bf:<i>`, where S = max(1, ⌈estimated bytes /
-64 MiB⌉) and estimated bytes = capacity × −ln(rate) / ln(2)² / 8. Each shard
+shard size⌉) and estimated bytes = capacity × −ln(rate) / ln(2)² / 8. Each shard
 reserves ⌈capacity / S⌉ at the configured rate, so every shard keeps that
 false-positive rate. A token's shard is its digest bytes 4–7 modulo S; its
-posting bucket uses bytes 0–3. valkey-bloom refuses a Bloom object over 128 MiB
-by default (`bf.bloom-memory-usage-limit`), which a single filter reaches at
-about 25M in-scope attributes; 64 MiB shards stay under it with no
-configuration. The info hash records the shard count (`shards`) and the filter
-type (`bloom_type`); a generation built before sharding has one filter
+posting bucket uses bytes 0–3. valkey-bloom refuses a Bloom object over
+`bf.bloom-memory-usage-limit` (128 MiB by default), which a single filter
+reaches at about 25M in-scope attributes. When a generation is reserved, the
+shard size is 90% of that limit as `CONFIG GET` reports it, so every shard
+fits; on RedisBloom, or when `CONFIG GET` fails, it is 64 MiB. A shard count
+above 1024 fails the reserve. See [Valkey setup](#valkey-setup). The info hash
+records the shard count (`shards`) and the filter type (`bloom_type`); a
+generation built before sharding has one filter
 `g:<generation>:bf` and neither field, and is served as it is. A full shard
 refuses further tokens, and the write fails closed rather than dropping them: a
 full live generation stops serving, answering 503 until a scheduled rebuild

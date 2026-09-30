@@ -505,6 +505,67 @@ class FastLookupIndexManagerTest extends TestCase
         $this->assertFalse($this->queued('1'));
     }
 
+    public function testMemoryLimitAdviceSizesTheRebuildFor150PercentOfTheAttributes()
+    {
+        $this->attribute->db->typeCounts = ['domain' => 45000000, 'md5' => 7];
+        $manager = $this->manager();
+        $manager->startRebuild();
+        $manager->runBatch(1);
+        $rebuild = $this->filter->reserved[0]['capacity'];
+        $this->assertSame(135000000, $rebuild);
+
+        $this->attribute->db->typeCounts = ['domain' => 30000000];
+        $this->filter->memoryLimit = 134217728;
+        $advice = $manager->memoryLimitAdvice();
+        $this->assertSame(30000000, $advice['attributes']);
+        $this->assertSame(45000000, $advice['target_attributes']);
+        $this->assertSame($rebuild, $advice['capacity'], 'The same capacity a rebuild at 150% of the attributes reserves.');
+        $this->assertSame(0.001, $advice['false_positive_rate']);
+        $this->assertSame((int)ceil(FastLookupFilter::estimatedFilterBytes($rebuild, 0.001)), $advice['estimated_bytes']);
+        $this->assertSame(FastLookupFilter::recommendedMemoryLimit($rebuild, 0.001), $advice['recommended']);
+        $this->assertSame(270532608, $advice['recommended'], '242,621,791 bytes / 0.9, rounded up to 258 MiB.');
+        $this->assertSame(134217728, $advice['current']);
+        $this->assertTrue($advice['readable']);
+        $this->assertFalse($advice['sufficient']);
+        $this->assertSame([], $this->filter->memoryLimitSets, 'Advice never changes the limit.');
+
+        $this->filter->memoryLimit = 270532608;
+        $this->assertTrue($manager->memoryLimitAdvice()['sufficient']);
+    }
+
+    public function testMemoryLimitAdviceKeepsTheLiveGenerationFloor()
+    {
+        $manager = $this->ready();
+        $live = $this->filter->meta['live'];
+        $this->filter->generations[$live]['info']['inserted'] = 40000000;
+        $this->assertSame(80000000, $manager->memoryLimitAdvice()['capacity'], 'Twice what the live generation holds.');
+    }
+
+    public function testMemoryLimitAdviceNeverRecommendsLessThanTheDefault()
+    {
+        $this->seed();
+        $this->filter->memoryLimit = 33554432;
+        $advice = $this->manager()->memoryLimitAdvice();
+        $this->assertSame(4, $advice['attributes']);
+        $this->assertSame(FastLookupIndexManager::MIN_CAPACITY, $advice['capacity']);
+        $this->assertSame(134217728, $advice['recommended']);
+        $this->assertFalse($advice['sufficient']);
+    }
+
+    public function testMemoryLimitAdviceWithoutAValkeyLimit()
+    {
+        $this->seed();
+        $advice = $this->manager()->memoryLimitAdvice();
+        $this->assertNull($advice['current']);
+        $this->assertTrue($advice['readable'], 'RedisBloom answers, with no such setting.');
+        $this->assertNull($advice['sufficient']);
+        $this->filter->memoryLimit = false;
+        $advice = $this->manager()->memoryLimitAdvice();
+        $this->assertNull($advice['current']);
+        $this->assertFalse($advice['readable']);
+        $this->assertSame(134217728, $advice['recommended']);
+    }
+
     public function testRebuildsAreSizedFromWhatTheLiveGenerationHolds()
     {
         $manager = $this->ready();

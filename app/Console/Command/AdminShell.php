@@ -62,6 +62,12 @@ class AdminShell extends AppShell
                 ]],
             ]);
         }
+        $parser->addSubcommand('valkeyMemoryLimit', [
+            'help' => 'Recommend a Valkey bf.bloom-memory-usage-limit that keeps the IOC index filter in one shard at 150% of the in-scope attributes.',
+            'parser' => ['options' => [
+                'apply' => ['help' => 'Raise the limit at runtime with CONFIG SET; it is never lowered.', 'default' => false, 'boolean' => true],
+            ]],
+        ]);
         $parser->addSubcommand('updateJSON', array(
             'help' => __('Update the JSON definitions of MISP.'),
         ));
@@ -338,6 +344,63 @@ class AdminShell extends AppShell
     public function processFastLookup()
     {
         $this->runFastLookupCommand(false, true);
+    }
+
+    public function valkeyMemoryLimit()
+    {
+        $manager = new FastLookupIndexManager($this->MispAttribute);
+        try {
+            $advice = $manager->memoryLimitAdvice();
+        } catch (Throwable $e) {
+            $this->error($e->getMessage());
+            return;
+        }
+        $setting = FastLookupFilter::MEMORY_LIMIT_CONFIG;
+        if ($advice['readable'] && $advice['current'] === null) {
+            $this->out("This server has no $setting setting (RedisBloom): no setting is needed.");
+            return;
+        }
+        $bytes = static function (int $value) { return sprintf('%d bytes (%.1f MiB)', $value, $value / 1048576); };
+        $recommended = $advice['recommended'];
+        $this->out(sprintf('In-scope attributes: %d', $advice['attributes']));
+        $this->out(sprintf('Filter capacity for 150%% (%d attributes): %d tokens at a false-positive rate of %s, about %s',
+            $advice['target_attributes'], $advice['capacity'], $advice['false_positive_rate'], $bytes($advice['estimated_bytes'])));
+        $this->out("Recommended $setting: " . $bytes($recommended));
+        if (!$advice['readable']) {
+            $this->out("Current $setting: unreadable (CONFIG GET failed or is disabled)");
+        } else {
+            $this->out("Current $setting: " . $bytes($advice['current']));
+            $this->out($advice['sufficient'] ? 'The current limit is sufficient.' : 'The current limit is too small: at 150% the filter would take more than one shard.');
+        }
+        // Never suggest lowering a larger limit.
+        $limit = max($recommended, $advice['current'] ?? 0);
+        $this->out('');
+        $this->out('Apply at runtime:');
+        $this->out("  CONFIG SET $setting $limit");
+        $this->out('Persist it in valkey.conf:');
+        $this->out("  $setting $limit");
+        $this->out('or as a server argument:');
+        $this->out("  --$setting $limit");
+        if (empty($this->params['apply'])) {
+            return;
+        }
+        $this->out('');
+        if (!$advice['readable']) {
+            $this->error("The current $setting cannot be read, so it is not changed.");
+            return;
+        }
+        if ($advice['sufficient']) {
+            $this->out("Not changed: the current $setting is already at least the recommended value.");
+            return;
+        }
+        try {
+            $manager->filter()->setMemoryLimit($recommended);
+        } catch (Throwable $e) {
+            $this->error($e->getMessage());
+            return;
+        }
+        $this->out("Set $setting to $recommended at runtime. It is not persisted across restarts unless the Valkey configuration file is updated.");
+        $this->out('Persist it before the next build: valkey-bloom refuses to load a filter larger than its limit, so a restart or replica with a lower limit cannot load the index.');
     }
 
     private function runFastLookupCommand(bool $rebuild, bool $pendingOnly): void

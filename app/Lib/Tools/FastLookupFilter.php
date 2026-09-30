@@ -37,8 +37,8 @@ class FastLookupPrefixesChangedException extends FastLookupIndexUnavailableExcep
 
 /**
  * Redis side of fast lookup: one Bloom filter (RedisBloom or valkey-bloom) per
- * generation, split into shards of at most 64 MiB, holding every token, plus
- * append-only postings for IP-range and domain tokens.
+ * generation, split into shards that fit the server's Bloom object limit,
+ * holding every token, plus append-only postings for IP-range and domain tokens.
  *
  * The filter only proves absence. SQL answers exact tokens that may be present;
  * range and domain tokens read postings whose attribute IDs SQL re-verifies.
@@ -64,8 +64,13 @@ class FastLookupFilter
     const LEGACY_PREFIX = 'misp:fast_lookup:v3:';
     /** The TYPE of a RedisBloom and of a valkey-bloom filter. */
     const BLOOM_TYPES = ['MBbloom--', 'bloomfltr'];
-    /** Half of valkey-bloom's default 128 MiB bf.bloom-memory-usage-limit. */
+    /** Half of valkey-bloom's default limit; the shard size when the server has none. */
     const SHARD_BYTES = 67108864;
+    const MEMORY_LIMIT_CONFIG = 'bf.bloom-memory-usage-limit';
+    /** valkey-bloom's default bf.bloom-memory-usage-limit. */
+    const DEFAULT_MEMORY_LIMIT = 134217728;
+    /** Share of the server's Bloom object limit one shard may use. */
+    const MEMORY_LIMIT_SHARE = 0.9;
     const MAX_SHARDS = 1024;
     const TOKEN_BYTES = 9;
     const MIN_CAPACITY = 1000000;
@@ -89,10 +94,13 @@ class FastLookupFilter
     private $redis;
     private $shardBytes;
 
-    /** $shardBytes exists for tests: it forces several shards at small sizes. */
-    public function __construct(string $namespace, array $scope, $redis = null, int $shardBytes = self::SHARD_BYTES)
+    /**
+     * $shardBytes exists for tests: it forces several shards at small sizes.
+     * Null derives it from the server's Bloom object limit at reserve.
+     */
+    public function __construct(string $namespace, array $scope, $redis = null, ?int $shardBytes = null)
     {
-        if ($shardBytes < 1) {
+        if ($shardBytes !== null && $shardBytes < 1) {
             throw new InvalidArgumentException('Invalid fastLookup shard size.');
         }
         if (empty($scope['attribute_types']) || !is_array($scope['attribute_types'])) {
@@ -147,6 +155,20 @@ class FastLookupFilter
         return max(1, (int)ceil(self::estimatedFilterBytes($capacity, $rate) / $shardBytes));
     }
 
+    /** The shard size for a server Bloom object limit; null (no such limit) keeps SHARD_BYTES. */
+    public static function shardBytesFor(?int $memoryLimit): int
+    {
+        return $memoryLimit === null ? self::SHARD_BYTES : max(1, (int)floor(self::MEMORY_LIMIT_SHARE * $memoryLimit));
+    }
+
+    /** The smallest limit, in whole MiB and never below the default, whose shard holds the whole filter. */
+    public static function recommendedMemoryLimit(int $capacity, float $rate): int
+    {
+        $mib = 1048576;
+        $bytes = (int)ceil(self::estimatedFilterBytes($capacity, $rate) / self::MEMORY_LIMIT_SHARE / $mib) * $mib;
+        return max(self::DEFAULT_MEMORY_LIMIT, $bytes);
+    }
+
     public static function shardCapacity(int $capacity, int $shards): int
     {
         return intdiv($capacity + $shards - 1, $shards);
@@ -195,6 +217,45 @@ class FastLookupFilter
         // phpredis returns [false] (a nil element) for an unknown command; an
         // error reply makes the whole result false.
         return is_array($info) && count($info) === 1 && ($info[0] === false || $info[0] === null) ? 'missing' : 'unreachable';
+    }
+
+    /**
+     * valkey-bloom's bf.bloom-memory-usage-limit in bytes; null when the server
+     * has no such setting (RedisBloom). Throws when it cannot be read.
+     */
+    public function memoryLimit(): ?int
+    {
+        try {
+            $reply = $this->connection()->rawCommand('CONFIG', 'GET', self::MEMORY_LIMIT_CONFIG);
+        } catch (Throwable $e) {
+            throw new FastLookupIndexUnavailableException('Redis could not read ' . self::MEMORY_LIMIT_CONFIG . '.', 0, $e);
+        }
+        if ($reply === []) {
+            return null;
+        }
+        $value = is_array($reply) && count($reply) === 2 && ($reply[0] ?? null) === self::MEMORY_LIMIT_CONFIG ? $reply[1] : null;
+        if (!is_string($value) || !preg_match('/\A[1-9][0-9]{0,18}\z/', $value)) {
+            throw new FastLookupIndexUnavailableException('Redis could not read ' . self::MEMORY_LIMIT_CONFIG . '.');
+        }
+        return (int)$value;
+    }
+
+    /** Sets bf.bloom-memory-usage-limit at runtime; it lasts until the server restarts. */
+    public function setMemoryLimit(int $bytes): void
+    {
+        if ($bytes < 1) {
+            throw new InvalidArgumentException('Invalid Bloom memory limit.');
+        }
+        try {
+            $this->connection()->clearLastError();
+            $result = $this->connection()->rawCommand('CONFIG', 'SET', self::MEMORY_LIMIT_CONFIG, (string)$bytes);
+        } catch (Throwable $e) {
+            throw new FastLookupIndexUnavailableException('Redis refused to set ' . self::MEMORY_LIMIT_CONFIG . '.', 0, $e);
+        }
+        if ($result !== true && $result !== 'OK') {
+            throw new FastLookupIndexUnavailableException('Redis refused to set ' . self::MEMORY_LIMIT_CONFIG . ': '
+                . ($this->connection()->getLastError() ?: 'no reason given') . '.');
+        }
     }
 
     public function metadata(): array
@@ -254,7 +315,16 @@ class FastLookupFilter
         if ($capacity < 1 || $rate <= 0 || $rate >= 1 || $rangeEntries < 0) {
             throw new InvalidArgumentException('Invalid fastLookup filter sizing.');
         }
-        $shards = self::shardCount($capacity, $rate, $this->shardBytes);
+        $shardBytes = $this->shardBytes;
+        if ($shardBytes === null) {
+            try {
+                $shardBytes = self::shardBytesFor($this->memoryLimit());
+            } catch (FastLookupIndexUnavailableException $e) {
+                // CONFIG renamed, disabled or refused: the default fits valkey-bloom's default limit.
+                $shardBytes = self::SHARD_BYTES;
+            }
+        }
+        $shards = self::shardCount($capacity, $rate, $shardBytes);
         if ($shards > self::MAX_SHARDS) {
             throw new OverflowException('The fastLookup filter would need more than ' . self::MAX_SHARDS . ' shards.');
         }

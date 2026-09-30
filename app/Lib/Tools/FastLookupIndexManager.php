@@ -51,6 +51,8 @@ class FastLookupIndexManager
     /** Most attributes carry one or two tokens. */
     const TOKENS_PER_ATTRIBUTE = 2;
     const CAPACITY_HEADROOM = 1.5;
+    /** The attribute growth a recommended Bloom memory limit leaves room for. */
+    const MEMORY_LIMIT_GROWTH = 1.5;
     /** Share of IP attributes assumed to be ranges when sizing postings. */
     const IP_RANGE_SHARE = 0.05;
     const REBUILD_AT_CAPACITY = 0.8;
@@ -713,7 +715,52 @@ class FastLookupIndexManager
         ];
     }
 
-    private function sizing(array $scope): array
+    /**
+     * valkey-bloom refuses a Bloom object over bf.bloom-memory-usage-limit: the
+     * limit that fits, in one shard, the filter a rebuild would reserve once
+     * the in-scope attributes grow by MEMORY_LIMIT_GROWTH. 'current' is null
+     * when the server has no such setting (RedisBloom) or, with 'readable'
+     * false, when it could not be read.
+     */
+    public function memoryLimitAdvice(): array
+    {
+        $scope = FastLookupConfig::scope($this->attribute);
+        $total = array_sum($this->attributeCounts($scope));
+        $target = (int)ceil(self::MEMORY_LIMIT_GROWTH * $total);
+        $capacity = self::capacityFor($target, $this->liveInserted());
+        $rate = (float)$scope['false_positive_rate'];
+        $readable = true;
+        try {
+            $current = $this->filter()->memoryLimit();
+        } catch (FastLookupIndexUnavailableException $e) {
+            $readable = false;
+            $current = null;
+        }
+        $recommended = FastLookupFilter::recommendedMemoryLimit($capacity, $rate);
+        return [
+            'attributes' => $total,
+            'target_attributes' => $target,
+            'capacity' => $capacity,
+            'false_positive_rate' => $rate,
+            'estimated_bytes' => (int)ceil(FastLookupFilter::estimatedFilterBytes($capacity, $rate)),
+            'recommended' => $recommended,
+            'current' => $current,
+            'readable' => $readable,
+            'sufficient' => $current === null ? null : $current >= $recommended,
+        ];
+    }
+
+    /** The filter capacity for $attributes, never below twice what the live generation holds. */
+    private static function capacityFor(int $attributes, ?int $liveInserted): int
+    {
+        $capacity = max(FastLookupFilter::MIN_CAPACITY, (int)ceil(self::CAPACITY_HEADROOM * self::TOKENS_PER_ATTRIBUTE * $attributes));
+        // The formula counts attributes, not their tokens: what the live
+        // generation already holds is the better floor.
+        return $liveInserted === null ? $capacity : max($capacity, 2 * $liveInserted);
+    }
+
+    /** In-scope attributes per type. */
+    private function attributeCounts(array $scope): array
     {
         $types = $scope['attribute_types'];
         $placeholders = implode(', ', array_fill(0, count($types), '?'));
@@ -723,6 +770,12 @@ class FastLookupIndexManager
         foreach ($this->query("SELECT type, COUNT(*) AS attributes FROM $table WHERE type IN ($placeholders) GROUP BY type", $types)->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $counts[$row['type']] = (int)$row['attributes'];
         }
+        return $counts;
+    }
+
+    private function sizing(array $scope): array
+    {
+        $counts = $this->attributeCounts($scope);
         $ranges = 0;
         foreach ($counts as $type => $count) {
             if (in_array($type, self::DOMAIN_TYPES, true)) {
@@ -733,12 +786,8 @@ class FastLookupIndexManager
             }
         }
         $total = array_sum($counts);
-        $capacity = max(FastLookupFilter::MIN_CAPACITY, (int)ceil(self::CAPACITY_HEADROOM * self::TOKENS_PER_ATTRIBUTE * $total));
-        // The formula counts attributes, not their tokens: what the live
-        // generation already holds is the better floor.
-        $inserted = $this->liveInserted();
         return [
-            'capacity' => $inserted === null ? $capacity : max($capacity, 2 * $inserted),
+            'capacity' => self::capacityFor($total, $this->liveInserted()),
             'range_entries' => $ranges,
             'total' => $total,
         ];

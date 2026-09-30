@@ -564,24 +564,71 @@ try {
         $assert($e->generation === 'legacyfull', 'A legacy filter at its capacity fails the lookup as full');
     }
 
-    // Default shards keep a large filter under valkey-bloom's 128 MiB object limit.
+    // Shards follow valkey-bloom's object limit; RedisBloom has none and keeps 64 MiB shards.
     $big = new FastLookupFilter($bigNamespace, $scope, $proxy);
-    $big->reserve('big', str_repeat('b', 64), 40000000, 0.001, 1);
-    $assert($big->metadata()['generations']['big']['shards'] === 2, 'A 40M-token filter takes two shards');
-    for ($i = 0; $i < 2; ++$i) {
-        $bytes = $redis->rawCommand('MEMORY', 'USAGE', $bigPrefix . 'g:big:bf:' . $i, 'SAMPLES', 0);
-        $assert(is_int($bytes) && $bytes > 0 && $bytes < 134217728, "Shard $i stays under 128 MiB: " . json_encode($bytes));
-    }
-    if ($isValkey) {
+    $limitSetting = FastLookupFilter::MEMORY_LIMIT_CONFIG;
+    $bigShards = static function (string $generation, int $capacity) use ($big, $redis, $bigPrefix) {
+        $big->reserve($generation, str_repeat('b', 64), $capacity, 0.001, 1);
+        $shards = $big->metadata()['generations'][$generation]['shards'];
+        $bytes = [];
+        for ($i = 0; $i < $shards; ++$i) {
+            $bytes[] = $redis->rawCommand('MEMORY', 'USAGE', $bigPrefix . 'g:' . $generation . ':bf:' . $i, 'SAMPLES', 0);
+        }
+        return $bytes;
+    };
+    $refusedAlone = static function (int $capacity) use ($redis, $bigPrefix) {
         try {
-            $single = $redis->rawCommand('BF.RESERVE', $bigPrefix . 'single', '0.001', '80000000', 'NONSCALING');
+            $single = $redis->rawCommand('BF.RESERVE', $bigPrefix . 'single', '0.001', (string)$capacity, 'NONSCALING');
             $error = (string)$redis->getLastError();
         } catch (RedisException $e) {
             $single = false;
             $error = $e->getMessage();
         }
         $redis->clearLastError();
-        $assert($single === false && strpos($error, 'exceeds bloom object memory limit') !== false, 'One 80M-token filter exceeds the default limit: ' . $error);
+        $redis->del($bigPrefix . 'single');
+        return $single === false && strpos($error, 'exceeds bloom object memory limit') !== false ? true : $error;
+    };
+    $below = static function (array $bytes, int $limit) {
+        foreach ($bytes as $b) { if (!is_int($b) || $b <= 0 || $b >= $limit) { return false; } }
+        return true;
+    };
+    if (!$isValkey) {
+        $assert($big->memoryLimit() === null, 'RedisBloom has no Bloom object limit');
+        $bytes = $bigShards('big', 40000000);
+        $assert(count($bytes) === 2 && $below($bytes, 134217728), 'A 40M-token filter takes two 64 MiB shards: ' . json_encode($bytes));
+    } else {
+        $originalLimit = $redis->rawCommand('CONFIG', 'GET', $limitSetting)[1];
+        try {
+            $assert($big->memoryLimit() === (int)$originalLimit, 'The server limit reads back: ' . $originalLimit);
+            $big->setMemoryLimit(134217728);
+            $bytes = $bigShards('big', 40000000);
+            $assert(count($bytes) === 1 && $below($bytes, 134217728), 'Under the default limit a 40M-token filter is one shard: ' . json_encode($bytes));
+            $assert($refusedAlone(80000000) === true, 'One 80M-token filter exceeds the default limit');
+            $bytes = $bigShards('big80', 80000000);
+            $assert(count($bytes) === 2 && $below($bytes, 134217728), 'An 80M-token filter takes two shards under the default limit: ' . json_encode($bytes));
+
+            $big->setMemoryLimit(268435456);
+            $assert($redis->rawCommand('CONFIG', 'GET', $limitSetting)[1] === '268435456', 'setMemoryLimit raises the limit at runtime');
+            $estimate = FastLookupFilter::estimatedFilterBytes(60000000, 0.001);
+            $assert($estimate > 67108864 && $estimate < 0.9 * 268435456, 'The 60M-token estimate lies between 64 MiB and 90% of 256 MiB');
+            $bytes = $bigShards('big60', 60000000);
+            $assert(count($bytes) === 1 && $bytes[0] > 67108864 && $bytes[0] < 268435456, 'Under 256 MiB a 60M-token filter is one shard over 64 MiB: ' . json_encode($bytes));
+
+            $big->setMemoryLimit(33554432);
+            $assert($refusedAlone(20000000) === true, 'One 20M-token filter exceeds a 32 MiB limit');
+            $bytes = $bigShards('small10', 10000000);
+            $assert(count($bytes) === 1 && $below($bytes, 33554432), 'Under 32 MiB a 10M-token filter is one shard: ' . json_encode($bytes));
+            $bytes = $bigShards('small20', 20000000);
+            $assert(count($bytes) >= 2 && $below($bytes, 33554432), 'Under 32 MiB a 20M-token filter takes shards under 32 MiB: ' . json_encode($bytes));
+
+            $recommended = FastLookupFilter::recommendedMemoryLimit(80000000, 0.001);
+            $big->setMemoryLimit($recommended);
+            $bytes = $bigShards('recommended', 80000000);
+            $assert(count($bytes) === 1 && $below($bytes, $recommended), "The recommended $recommended-byte limit holds 80M tokens in one shard: " . json_encode($bytes));
+        } finally {
+            $redis->rawCommand('CONFIG', 'SET', $limitSetting, $originalLimit);
+        }
+        $assert($redis->rawCommand('CONFIG', 'GET', $limitSetting)[1] === $originalLimit, 'The original limit is restored');
     }
     foreach (array_chunk($keys($bigPrefix . '*'), 500) as $batch) { $redis->del($batch); }
 

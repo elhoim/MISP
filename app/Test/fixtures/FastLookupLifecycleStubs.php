@@ -60,6 +60,8 @@ class FastLookupLifecycleConnection
     public $leaseFilter;
     /** Per dirty-event refresh query: whether a transaction was open. */
     public $refreshes = [];
+    /** type => count: answers the sizing count in place of $attributes. */
+    public $typeCounts;
     private $snapshot;
     public function getConnection() { return $this; }
     public function fullTableName($model) { return is_string($model) ? $model : $model->useTable; }
@@ -112,8 +114,8 @@ class FastLookupLifecycleConnection
             return [['high_water' => $ids ? (string)max($ids) : null]];
         }
         if (strpos($sql, 'GROUP BY type') !== false) {
-            $counts = [];
-            foreach ($this->attributes as $row) {
+            $counts = $this->typeCounts === null ? [] : array_intersect_key($this->typeCounts, array_flip($args));
+            foreach ($this->typeCounts === null ? $this->attributes : [] as $row) {
                 if (in_array($row['type'], $args, true)) { $counts[$row['type']] = ($counts[$row['type']] ?? 0) + 1; }
             }
             $rows = [];
@@ -175,6 +177,16 @@ class FastLookupLifecycleFilter
     public $leaseRenewals = 0;
     /** Another worker's lease is released after this many refused attempts (null: never). */
     public $releaseOtherLeaseAfter;
+    /** bf.bloom-memory-usage-limit: null on RedisBloom, false when CONFIG GET fails. */
+    public $memoryLimit;
+    /** setMemoryLimit() arguments in call order. */
+    public $memoryLimitSets = [];
+    public function memoryLimit()
+    {
+        if ($this->memoryLimit === false) { throw new FastLookupIndexUnavailableException('Redis could not read bf.bloom-memory-usage-limit.'); }
+        return $this->memoryLimit;
+    }
+    public function setMemoryLimit($bytes) { $this->memoryLimitSets[] = $bytes; $this->memoryLimit = $bytes; }
     /** Like the real filter: false when Redis is unreachable too. */
     public function moduleAvailable() { return $this->moduleState() === 'available'; }
     public function moduleState() { return !$this->available ? 'unreachable' : ($this->moduleAvailable ? 'available' : 'missing'); }
