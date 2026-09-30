@@ -1,5 +1,5 @@
 <?php
-App::uses('FastLookupFilter', 'Tools');
+App::uses('FastLookupSizing', 'Tools');
 
 /** Membership settings and database identity shared by writers and readers. */
 class FastLookupConfig
@@ -255,9 +255,9 @@ class FastLookupConfig
             return null;
         }
         if ((!is_int($value) && !is_string($value)) || !preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$value)
-            || (int)$value < FastLookupFilter::SHARD_BYTES) {
+            || (int)$value < FastLookupSizing::SHARD_BYTES) {
             throw new InvalidArgumentException('MISP.fast_lookup_valkey_shard_bytes must be a whole number of bytes of at least '
-                . FastLookupFilter::SHARD_BYTES . ' (64 MiB), or empty for the default shards.');
+                . FastLookupSizing::SHARD_BYTES . ' (64 MiB), or empty for the default shards.');
         }
         return (int)$value;
     }

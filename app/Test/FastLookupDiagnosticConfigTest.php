@@ -13,7 +13,7 @@ class FastLookupDiagnosticConfigTest extends TestCase
     {
         require_once __DIR__ . '/fixtures/FastLookupConfigurationStub.php';
         require_once __DIR__ . '/../Lib/Tools/FastLookupConfig.php';
-        require_once __DIR__ . '/../Lib/Tools/FastLookupFilter.php';
+        require_once __DIR__ . '/../Lib/Tools/FastLookupSizing.php';
         Configure::clear();
         $this->attribute = new FastLookupTestAttribute();
         $this->assertTrue(method_exists(FastLookupConfig::class, 'diagnosticScope'));

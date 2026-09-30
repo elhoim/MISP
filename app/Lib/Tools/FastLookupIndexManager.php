@@ -1,6 +1,7 @@
 <?php
 App::uses('FastLookupConfig', 'Tools');
 App::uses('FastLookupFilter', 'Tools');
+App::uses('FastLookupSizing', 'Tools');
 App::uses('FastLookupValueTool', 'Tools');
 
 /** The worker lease lapsed mid-batch: another worker may own the index now. */
@@ -739,15 +740,15 @@ class FastLookupIndexManager
             $readable = false;
             $current = null;
         }
-        $recommended = FastLookupFilter::recommendedMemoryLimit($capacity, $rate);
+        $recommended = FastLookupSizing::recommendedMemoryLimit($capacity, $rate);
         return [
             'attributes' => $total,
             'target_attributes' => $target,
             'capacity' => $capacity,
             'false_positive_rate' => $rate,
-            'estimated_bytes' => (int)ceil(FastLookupFilter::estimatedFilterBytes($capacity, $rate)),
+            'estimated_bytes' => (int)ceil(FastLookupSizing::estimatedFilterBytes($capacity, $rate)),
             'recommended' => $recommended,
-            'shard_bytes' => FastLookupFilter::limitShardBytes($recommended),
+            'shard_bytes' => FastLookupSizing::limitShardBytes($recommended),
             'configured_shard_bytes' => FastLookupConfig::valkeyShardBytes(),
             'current' => $current,
             'readable' => $readable,

@@ -521,8 +521,8 @@ class FastLookupIndexManagerTest extends TestCase
         $this->assertSame(45000000, $advice['target_attributes']);
         $this->assertSame($rebuild, $advice['capacity'], 'The same capacity a rebuild at 150% of the attributes reserves.');
         $this->assertSame(0.001, $advice['false_positive_rate']);
-        $this->assertSame((int)ceil(FastLookupFilter::estimatedFilterBytes($rebuild, 0.001)), $advice['estimated_bytes']);
-        $this->assertSame(FastLookupFilter::recommendedMemoryLimit($rebuild, 0.001), $advice['recommended']);
+        $this->assertSame((int)ceil(FastLookupSizing::estimatedFilterBytes($rebuild, 0.001)), $advice['estimated_bytes']);
+        $this->assertSame(FastLookupSizing::recommendedMemoryLimit($rebuild, 0.001), $advice['recommended']);
         $this->assertSame(270532608, $advice['recommended'], '242,621,791 bytes / 0.9, rounded up to 258 MiB.');
         $this->assertSame(243479347, $advice['shard_bytes'], 'The opt-in: 90% of the recommended limit.');
         $this->assertNull($advice['configured_shard_bytes']);

@@ -717,23 +717,23 @@ class FastLookupFilterTest extends TestCase
 
     public function testShardCountSplitsAtTheShardSize(): void
     {
-        $bytes = FastLookupFilter::estimatedFilterBytes(1000000, 0.001);
-        $this->assertSame(1, FastLookupFilter::shardCount(1000000, 0.001, (int)ceil($bytes)));
-        $this->assertSame(2, FastLookupFilter::shardCount(1000000, 0.001, (int)ceil($bytes) - 1));
-        $this->assertSame(2, FastLookupFilter::shardCount(1000000, 0.001, (int)ceil($bytes / 2)));
-        $this->assertSame(3, FastLookupFilter::shardCount(1000000, 0.001, (int)floor($bytes / 2)));
+        $bytes = FastLookupSizing::estimatedFilterBytes(1000000, 0.001);
+        $this->assertSame(1, FastLookupSizing::shardCount(1000000, 0.001, (int)ceil($bytes)));
+        $this->assertSame(2, FastLookupSizing::shardCount(1000000, 0.001, (int)ceil($bytes) - 1));
+        $this->assertSame(2, FastLookupSizing::shardCount(1000000, 0.001, (int)ceil($bytes / 2)));
+        $this->assertSame(3, FastLookupSizing::shardCount(1000000, 0.001, (int)floor($bytes / 2)));
     }
 
     public function testDefaultShardsKeepEveryFilterUnderHalfValkeysLimit(): void
     {
-        $this->assertSame(67108864, FastLookupFilter::SHARD_BYTES);
-        $this->assertSame(1, FastLookupFilter::shardCount(1, 0.5));
-        $this->assertSame(1, FastLookupFilter::shardCount(1000000, 0.001));
-        $this->assertSame(1, FastLookupFilter::shardCount(37000000, 0.001));
-        $this->assertSame(2, FastLookupFilter::shardCount(38000000, 0.001));
-        $this->assertSame(2, FastLookupFilter::shardCount(40000000, 0.001));
-        $this->assertSame(3, FastLookupFilter::shardCount(80000000, 0.001));
-        $this->assertSame(9, FastLookupFilter::shardCount(300000000, 0.001));
+        $this->assertSame(67108864, FastLookupSizing::SHARD_BYTES);
+        $this->assertSame(1, FastLookupSizing::shardCount(1, 0.5));
+        $this->assertSame(1, FastLookupSizing::shardCount(1000000, 0.001));
+        $this->assertSame(1, FastLookupSizing::shardCount(37000000, 0.001));
+        $this->assertSame(2, FastLookupSizing::shardCount(38000000, 0.001));
+        $this->assertSame(2, FastLookupSizing::shardCount(40000000, 0.001));
+        $this->assertSame(3, FastLookupSizing::shardCount(80000000, 0.001));
+        $this->assertSame(9, FastLookupSizing::shardCount(300000000, 0.001));
     }
 
     public function testShardCapacityRoundsUpSoTheShardsHoldTheWholeCapacity(): void
@@ -792,43 +792,43 @@ class FastLookupFilterTest extends TestCase
 
     public function testDefaultShardBytesFollowTheServerLimitDownwardOnly(): void
     {
-        $this->assertSame(67108864, FastLookupFilter::shardBytesFor(1073741824), 'A 1 GiB limit alone never grows the shards.');
-        $this->assertSame(67108864, FastLookupFilter::shardBytesFor(134217728));
-        $this->assertSame(30198988, FastLookupFilter::shardBytesFor(33554432), 'A limit below 64 MiB gives smaller shards.');
-        $this->assertSame(1, FastLookupFilter::shardBytesFor(1));
-        $this->assertSame(FastLookupFilter::SHARD_BYTES, FastLookupFilter::shardBytesFor(null));
+        $this->assertSame(67108864, FastLookupSizing::shardBytesFor(1073741824), 'A 1 GiB limit alone never grows the shards.');
+        $this->assertSame(67108864, FastLookupSizing::shardBytesFor(134217728));
+        $this->assertSame(30198988, FastLookupSizing::shardBytesFor(33554432), 'A limit below 64 MiB gives smaller shards.');
+        $this->assertSame(1, FastLookupSizing::shardBytesFor(1));
+        $this->assertSame(FastLookupSizing::SHARD_BYTES, FastLookupSizing::shardBytesFor(null));
     }
 
     public function testOptInShardBytesAreCappedByTheLiveLimit(): void
     {
-        $this->assertSame(241591910, FastLookupFilter::shardBytesFor(268435456, 241591910));
-        $this->assertSame(120795955, FastLookupFilter::shardBytesFor(134217728, 241591910), 'Never above 90% of the running limit.');
-        $this->assertSame(33554432, FastLookupFilter::shardBytesFor(268435456, 33554432));
-        $this->assertSame(FastLookupFilter::SHARD_BYTES, FastLookupFilter::shardBytesFor(null, 241591910), 'Ignored without a Valkey limit.');
-        $this->assertSame(120795955, FastLookupFilter::limitShardBytes(134217728));
+        $this->assertSame(241591910, FastLookupSizing::shardBytesFor(268435456, 241591910));
+        $this->assertSame(120795955, FastLookupSizing::shardBytesFor(134217728, 241591910), 'Never above 90% of the running limit.');
+        $this->assertSame(33554432, FastLookupSizing::shardBytesFor(268435456, 33554432));
+        $this->assertSame(FastLookupSizing::SHARD_BYTES, FastLookupSizing::shardBytesFor(null, 241591910), 'Ignored without a Valkey limit.');
+        $this->assertSame(120795955, FastLookupSizing::limitShardBytes(134217728));
     }
 
     public function testRecommendedMemoryLimitFitsTheFilterInOneShardInWholeMiB(): void
     {
         $mib = 1048576;
         $capacity = 135000000;
-        $bytes = FastLookupFilter::estimatedFilterBytes($capacity, 0.001);
-        $limit = FastLookupFilter::recommendedMemoryLimit($capacity, 0.001);
+        $bytes = FastLookupSizing::estimatedFilterBytes($capacity, 0.001);
+        $limit = FastLookupSizing::recommendedMemoryLimit($capacity, 0.001);
         $this->assertSame((int)ceil($bytes / 0.9 / $mib) * $mib, $limit);
         $this->assertSame(0, $limit % $mib);
         $this->assertGreaterThan($bytes, $limit);
-        $this->assertSame(1, FastLookupFilter::shardCount($capacity, 0.001, FastLookupFilter::limitShardBytes($limit)));
-        $this->assertSame(2, FastLookupFilter::shardCount($capacity, 0.001, FastLookupFilter::limitShardBytes($limit - $mib)), 'No smaller whole-MiB limit fits.');
-        $this->assertSame(1, FastLookupFilter::shardCount($capacity * 10, 0.0001, FastLookupFilter::limitShardBytes(FastLookupFilter::recommendedMemoryLimit($capacity * 10, 0.0001))));
+        $this->assertSame(1, FastLookupSizing::shardCount($capacity, 0.001, FastLookupSizing::limitShardBytes($limit)));
+        $this->assertSame(2, FastLookupSizing::shardCount($capacity, 0.001, FastLookupSizing::limitShardBytes($limit - $mib)), 'No smaller whole-MiB limit fits.');
+        $this->assertSame(1, FastLookupSizing::shardCount($capacity * 10, 0.0001, FastLookupSizing::limitShardBytes(FastLookupSizing::recommendedMemoryLimit($capacity * 10, 0.0001))));
     }
 
     public function testRecommendedMemoryLimitIsNeverBelowTheDefault(): void
     {
-        $this->assertSame(134217728, FastLookupFilter::DEFAULT_MEMORY_LIMIT);
-        $this->assertSame(134217728, FastLookupFilter::recommendedMemoryLimit(1, 0.05));
-        $this->assertSame(134217728, FastLookupFilter::recommendedMemoryLimit(FastLookupFilter::MIN_CAPACITY, 0.001));
-        $this->assertSame(134217728, FastLookupFilter::recommendedMemoryLimit(60000000, 0.001));
-        $this->assertGreaterThan(134217728, FastLookupFilter::recommendedMemoryLimit(70000000, 0.001));
+        $this->assertSame(134217728, FastLookupSizing::DEFAULT_MEMORY_LIMIT);
+        $this->assertSame(134217728, FastLookupSizing::recommendedMemoryLimit(1, 0.05));
+        $this->assertSame(134217728, FastLookupSizing::recommendedMemoryLimit(FastLookupFilter::MIN_CAPACITY, 0.001));
+        $this->assertSame(134217728, FastLookupSizing::recommendedMemoryLimit(60000000, 0.001));
+        $this->assertGreaterThan(134217728, FastLookupSizing::recommendedMemoryLimit(70000000, 0.001));
     }
 
     /** The shard count reserve() records for $capacity at 0.001 against a double answering CONFIG GET with $reply. */

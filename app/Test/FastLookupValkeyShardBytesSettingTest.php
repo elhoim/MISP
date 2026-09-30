@@ -33,7 +33,7 @@ class FastLookupValkeyShardBytesSettingTest extends TestCase
         if (!function_exists('__')) {
             eval('function __($text, ...$args) { return $args ? vsprintf($text, $args) : $text; }');
         }
-        require_once __DIR__ . '/../Lib/Tools/FastLookupFilter.php';
+        require_once __DIR__ . '/../Lib/Tools/FastLookupSizing.php';
         require_once __DIR__ . '/../Lib/Tools/FastLookupConfig.php';
         require_once __DIR__ . '/../Lib/Tools/EnvSetting.php';
         require_once __DIR__ . '/../Model/Server.php';

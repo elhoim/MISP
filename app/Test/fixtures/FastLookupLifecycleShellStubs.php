@@ -40,12 +40,7 @@ class BackgroundJobsTool
 }
 class FastLookupFilter extends FastLookupLifecycleFilter
 {
-    const MEMORY_LIMIT_CONFIG = FastLookupRealFilter::MEMORY_LIMIT_CONFIG;
-    const SHARD_BYTES = FastLookupRealFilter::SHARD_BYTES;
     private static $shared;
-    public static function estimatedFilterBytes(int $capacity, float $rate): float { return FastLookupRealFilter::estimatedFilterBytes($capacity, $rate); }
-    public static function limitShardBytes(int $memoryLimit): int { return FastLookupRealFilter::limitShardBytes($memoryLimit); }
-    public static function recommendedMemoryLimit(int $capacity, float $rate): int { return FastLookupRealFilter::recommendedMemoryLimit($capacity, $rate); }
     /** Constructor arguments of every instance, in order. */
     public static function constructed() { return self::$shared['constructed']; }
     public function __construct(...$args)

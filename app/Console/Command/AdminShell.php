@@ -7,6 +7,7 @@ App::uses('AbstractMigration', 'Migration');
 App::uses('MigrationManager', 'Migration');
 App::uses('AbstractGrammar', 'Migration/Grammar');
 App::uses('FastLookupIndexManager', 'Tools');
+App::uses('FastLookupSizing', 'Tools');
 
 /**
  * @property Server $Server
@@ -355,7 +356,7 @@ class AdminShell extends AppShell
             $this->error($e->getMessage());
             return;
         }
-        $setting = FastLookupFilter::MEMORY_LIMIT_CONFIG;
+        $setting = FastLookupSizing::MEMORY_LIMIT_CONFIG;
         if ($advice['readable'] && $advice['current'] === null) {
             $this->out("This server has no $setting setting (RedisBloom): no setting is needed.");
             return;
@@ -373,7 +374,7 @@ class AdminShell extends AppShell
             $this->out($advice['sufficient'] ? 'The current limit is sufficient.' : 'The current limit is below the recommendation.');
         }
         $this->out('Current MISP.fast_lookup_valkey_shard_bytes: ' . ($advice['configured_shard_bytes'] === null
-            ? 'not set (shards of at most ' . $bytes(FastLookupFilter::SHARD_BYTES) . ')' : $bytes($advice['configured_shard_bytes'])));
+            ? 'not set (shards of at most ' . $bytes(FastLookupSizing::SHARD_BYTES) . ')' : $bytes($advice['configured_shard_bytes'])));
         // Never suggest lowering a larger limit.
         $limit = max($recommended, $advice['current'] ?? 0);
         $this->out('');
@@ -407,7 +408,7 @@ class AdminShell extends AppShell
             return;
         }
         $this->out("Set $setting to $recommended at runtime only: it does not persist across restarts.");
-        $this->out('On its own it changes nothing: shards stay at most ' . FastLookupFilter::SHARD_BYTES . ' bytes until MISP.fast_lookup_valkey_shard_bytes is set.');
+        $this->out('On its own it changes nothing: shards stay at most ' . FastLookupSizing::SHARD_BYTES . ' bytes until MISP.fast_lookup_valkey_shard_bytes is set.');
     }
 
     private function runFastLookupCommand(bool $rebuild, bool $pendingOnly): void
