@@ -40,20 +40,14 @@ class BackgroundJobsTool
 }
 class FastLookupFilter extends FastLookupLifecycleFilter
 {
-    const MEMORY_LIMIT_CONFIG = 'bf.bloom-memory-usage-limit';
+    const MEMORY_LIMIT_CONFIG = FastLookupRealFilter::MEMORY_LIMIT_CONFIG;
+    const SHARD_BYTES = FastLookupRealFilter::SHARD_BYTES;
     private static $shared;
-    public static function estimatedFilterBytes(int $capacity, float $rate): float
-    {
-        return max(1, $capacity) * -log($rate) / (log(2) ** 2) / 8;
-    }
-    const SHARD_BYTES = 67108864;
+    public static function estimatedFilterBytes(int $capacity, float $rate): float { return FastLookupRealFilter::estimatedFilterBytes($capacity, $rate); }
+    public static function limitShardBytes(int $memoryLimit): int { return FastLookupRealFilter::limitShardBytes($memoryLimit); }
+    public static function recommendedMemoryLimit(int $capacity, float $rate): int { return FastLookupRealFilter::recommendedMemoryLimit($capacity, $rate); }
     /** Constructor arguments of every instance, in order. */
     public static function constructed() { return self::$shared['constructed']; }
-    public static function limitShardBytes(int $memoryLimit): int { return max(1, (int)floor(0.9 * $memoryLimit)); }
-    public static function recommendedMemoryLimit(int $capacity, float $rate): int
-    {
-        return max(134217728, (int)ceil(self::estimatedFilterBytes($capacity, $rate) / 0.9 / 1048576) * 1048576);
-    }
     public function __construct(...$args)
     {
         if (self::$shared === null) { self::$shared = ['meta' => [], 'generations' => [], 'lease' => null, 'available' => true, 'refuse' => false, 'limit' => null, 'sets' => [], 'constructed' => []]; }

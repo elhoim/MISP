@@ -54,7 +54,9 @@ It counts the in-scope attributes and prints, in order:
 3. The opt-in, to run only once every node has the limit persisted:
    `app/Console/cake Admin setSetting MISP.fast_lookup_valkey_shard_bytes <bytes>`,
    where the value is 90% of the recommended limit. Shards are never larger
-   than this setting, nor than 90% of the running limit.
+   than this setting, nor than 90% of the running limit. The setting takes a
+   whole number of bytes of at least 67108864 (64 MiB). To clear it, set `0`,
+   an empty value in the web UI, or use `setSetting --null`.
 4. That a rebuild (`rebuildFastLookup`) is needed for fewer shards to take
    effect. Existing generations keep their layout.
 
@@ -76,7 +78,7 @@ Re-run the step as the instance grows.
 | `MISP.fast_lookup_published_only` | `true` | Include only published events; changing this policy requires a backfill. |
 | `MISP.fast_lookup_max_values` | `10000` | Positive maximum submitted values per request. Changing this limit does not rebuild the index. |
 | `MISP.fast_lookup_false_positive_rate` | `0.001` | Target Bloom filter false-positive rate, `0.0001`-`0.05`. Part of the index fingerprint: changing it requires a rebuild. |
-| `MISP.fast_lookup_valkey_shard_bytes` | unset | Valkey only: opt in to Bloom filter shards above 64 MiB, in bytes, capped at 90% of the running `bf.bloom-memory-usage-limit`. Set it only after that limit is persisted on every node, replicas included; see [Valkey setup](#valkey-setup). Applies from the next rebuild. |
+| `MISP.fast_lookup_valkey_shard_bytes` | `0` (unset) | Valkey only: opt in to Bloom filter shards above 64 MiB. The value is a whole number of bytes of at least 67108864, capped at 90% of the running `bf.bloom-memory-usage-limit`; `0` or an empty value clears it. Set it only after that limit is persisted on every node, replicas included; see [Valkey setup](#valkey-setup). Applies from the next rebuild. |
 
 The exact default types are `domain`, `domain|ip`, `hostname`, `hostname|port`,
 `ip-src`, `ip-dst`, `ip-src|port`, `ip-dst|port`, `md5`, `sha1`, `sha256`, `sha512`,

@@ -1,4 +1,5 @@
 <?php
+App::uses('FastLookupFilter', 'Tools');
 
 /** Membership settings and database identity shared by writers and readers. */
 class FastLookupConfig
@@ -99,11 +100,9 @@ class FastLookupConfig
         }
     }
 
+    /** Also the raw-value beforeHook: the numeric setting type casts '64MiB' or '1.5' to an int first. */
     public static function validateValkeyShardBytesSetting($value)
     {
-        if ($value === null || $value === '') {
-            return true;
-        }
         try {
             self::shardBytes($value);
             return true;
@@ -116,9 +115,6 @@ class FastLookupConfig
     public static function valkeyShardBytes(): ?int
     {
         $value = Configure::read('MISP.fast_lookup_valkey_shard_bytes');
-        if ($value === null || $value === '') {
-            return null;
-        }
         return self::orNull(function () use ($value) { return self::shardBytes($value); });
     }
 
@@ -249,10 +245,19 @@ class FastLookupConfig
         }
     }
 
-    private static function shardBytes($value): int
+    /** Null for unset: null, empty or 0, which an emptied numeric setting saves. */
+    private static function shardBytes($value): ?int
     {
-        if ((!is_int($value) && !is_string($value)) || !preg_match('/^[1-9][0-9]{0,17}$/D', (string)$value)) {
-            throw new InvalidArgumentException('MISP.fast_lookup_valkey_shard_bytes must be a positive number of bytes.');
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+        if ($value === null || $value === '' || $value === 0 || $value === '0') {
+            return null;
+        }
+        if ((!is_int($value) && !is_string($value)) || !preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$value)
+            || (int)$value < FastLookupFilter::SHARD_BYTES) {
+            throw new InvalidArgumentException('MISP.fast_lookup_valkey_shard_bytes must be a whole number of bytes of at least '
+                . FastLookupFilter::SHARD_BYTES . ' (64 MiB), or empty for the default shards.');
         }
         return (int)$value;
     }

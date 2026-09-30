@@ -2036,6 +2036,11 @@ class Server extends AppModel
         return FastLookupConfig::validateFalsePositiveRateSetting($value);
     }
 
+    public function fastLookupValkeyShardBytesBeforeHook($setting, $value)
+    {
+        return $this->testFastLookupValkeyShardBytes($value);
+    }
+
     public function testFastLookupValkeyShardBytes($value)
     {
         return FastLookupConfig::validateValkeyShardBytesSetting($value);
@@ -7100,9 +7105,10 @@ class Server extends AppModel
                 ),
                 'fast_lookup_valkey_shard_bytes' => array(
                     'level' => self::SETTING_OPTIONAL,
-                    'description' => __('Valkey only: the largest fast lookup Bloom filter shard, in bytes, capped at 90% of the live bf.bloom-memory-usage-limit. Unset, shards stay at most 64 MiB, which is safe with any limit of 64 MiB or more. Set it only after bf.bloom-memory-usage-limit is persisted in valkey.conf or the server arguments on EVERY Valkey node, replicas included: a Bloom filter larger than a node\'s limit prevents that node from loading its data at start-up. Run app/Console/cake Admin valkeyMemoryLimit for the values; a rebuild applies it.'),
-                    'value' => '',
+                    'description' => __('Valkey only: the largest fast lookup Bloom filter shard, in bytes, at least 67108864 (64 MiB) and capped at 90% of the live bf.bloom-memory-usage-limit. Unset (0 or empty), shards stay at most 64 MiB, which is safe with any limit of 64 MiB or more. Set it only after bf.bloom-memory-usage-limit is persisted in valkey.conf or the server arguments on EVERY Valkey node, replicas included: a Bloom filter larger than a node\'s limit prevents that node from loading its data at start-up. Run app/Console/cake Admin valkeyMemoryLimit for the values; a rebuild applies it.'),
+                    'value' => 0,
                     'test' => 'testFastLookupValkeyShardBytes',
+                    'beforeHook' => 'fastLookupValkeyShardBytesBeforeHook',
                     'type' => 'numeric',
                     'null' => true,
                 ),

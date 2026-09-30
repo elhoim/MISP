@@ -13,6 +13,7 @@ class FastLookupDiagnosticConfigTest extends TestCase
     {
         require_once __DIR__ . '/fixtures/FastLookupConfigurationStub.php';
         require_once __DIR__ . '/../Lib/Tools/FastLookupConfig.php';
+        require_once __DIR__ . '/../Lib/Tools/FastLookupFilter.php';
         Configure::clear();
         $this->attribute = new FastLookupTestAttribute();
         $this->assertTrue(method_exists(FastLookupConfig::class, 'diagnosticScope'));
@@ -89,12 +90,16 @@ class FastLookupDiagnosticConfigTest extends TestCase
         $this->assertNull(FastLookupConfig::valkeyShardBytes());
         Configure::write('MISP.fast_lookup_valkey_shard_bytes', '241591910');
         $this->assertSame(241591910, FastLookupConfig::valkeyShardBytes());
-        foreach (['0', '-1', 'lots', 1.5, '64MiB'] as $invalid) {
+        foreach (['-1', 'lots', 1.5, '64MiB', true, '1000'] as $invalid) {
             Configure::write('MISP.fast_lookup_valkey_shard_bytes', $invalid);
             $this->assertNull(FastLookupConfig::valkeyShardBytes(), 'An invalid value keeps the default shards: ' . json_encode($invalid));
             $this->assertIsString(FastLookupConfig::validateValkeyShardBytesSetting($invalid));
         }
-        $this->assertTrue(FastLookupConfig::validateValkeyShardBytesSetting(''));
+        foreach (['', '0', 0, null] as $unset) {
+            $this->assertTrue(FastLookupConfig::validateValkeyShardBytesSetting($unset));
+            Configure::write('MISP.fast_lookup_valkey_shard_bytes', $unset);
+            $this->assertNull(FastLookupConfig::valkeyShardBytes());
+        }
         $this->assertTrue(FastLookupConfig::validateValkeyShardBytesSetting(241591910));
     }
 }
