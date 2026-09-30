@@ -21,17 +21,9 @@ class FastLookupValkeyShardBytesSettingTest extends TestCase
     {
         require_once __DIR__ . '/../Vendor/autoload.php';
         require_once __DIR__ . '/fixtures/FastLookupConfigurationStub.php';
-        if (!class_exists('AppModel', false)) {
-            eval('class AppModel { public function __get($name) { return null; } protected function loadLog() { return new class { public function createLogEntry(...$args) {} }; } }');
-        }
-        if (!class_exists('SystemSetting', false)) {
-            eval('class SystemSetting { const ALLOWED_CATEGORIES = ["MISP"]; public static function isSensitive($setting) { return false; } }');
-        }
+        require_once __DIR__ . '/fixtures/FastLookupServerSettingStubs.php';
         foreach (['DS' => '/', 'ROOT' => dirname(__DIR__, 2), 'APP' => dirname(__DIR__) . '/', 'APP_DIR' => 'app'] as $constant => $value) {
             if (!defined($constant)) { define($constant, $value); }
-        }
-        if (!function_exists('__')) {
-            eval('function __($text, ...$args) { return $args ? vsprintf($text, $args) : $text; }');
         }
         require_once __DIR__ . '/../Lib/Tools/FastLookupSizing.php';
         require_once __DIR__ . '/../Lib/Tools/FastLookupConfig.php';
