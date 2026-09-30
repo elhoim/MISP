@@ -99,6 +99,29 @@ class FastLookupConfig
         }
     }
 
+    public static function validateValkeyShardBytesSetting($value)
+    {
+        if ($value === null || $value === '') {
+            return true;
+        }
+        try {
+            self::shardBytes($value);
+            return true;
+        } catch (InvalidArgumentException $e) {
+            return $e->getMessage();
+        }
+    }
+
+    /** The opt-in to shards above the default size on Valkey; null when unset or invalid. */
+    public static function valkeyShardBytes(): ?int
+    {
+        $value = Configure::read('MISP.fast_lookup_valkey_shard_bytes');
+        if ($value === null || $value === '') {
+            return null;
+        }
+        return self::orNull(function () use ($value) { return self::shardBytes($value); });
+    }
+
     public static function validateFalsePositiveRateSetting($value)
     {
         try {
@@ -224,6 +247,14 @@ class FastLookupConfig
         } catch (InvalidArgumentException $e) {
             return null;
         }
+    }
+
+    private static function shardBytes($value): int
+    {
+        if ((!is_int($value) && !is_string($value)) || !preg_match('/^[1-9][0-9]{0,17}$/D', (string)$value)) {
+            throw new InvalidArgumentException('MISP.fast_lookup_valkey_shard_bytes must be a positive number of bytes.');
+        }
+        return (int)$value;
     }
 
     private static function positiveInteger($value)

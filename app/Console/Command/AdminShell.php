@@ -63,9 +63,9 @@ class AdminShell extends AppShell
             ]);
         }
         $parser->addSubcommand('valkeyMemoryLimit', [
-            'help' => 'Recommend a Valkey bf.bloom-memory-usage-limit that keeps the IOC index filter in one shard at 150% of the in-scope attributes.',
+            'help' => 'Recommend a Valkey bf.bloom-memory-usage-limit and shard size opt-in that keep the IOC index filter in one shard at 150% of the in-scope attributes.',
             'parser' => ['options' => [
-                'apply' => ['help' => 'Raise the limit at runtime with CONFIG SET; it is never lowered.', 'default' => false, 'boolean' => true],
+                'apply' => ['help' => 'Raise the limit at runtime only with CONFIG SET; it is never lowered, and shard sizes change only with MISP.fast_lookup_valkey_shard_bytes.', 'default' => false, 'boolean' => true],
             ]],
         ]);
         $parser->addSubcommand('updateJSON', array(
@@ -370,17 +370,24 @@ class AdminShell extends AppShell
             $this->out("Current $setting: unreadable (CONFIG GET failed or is disabled)");
         } else {
             $this->out("Current $setting: " . $bytes($advice['current']));
-            $this->out($advice['sufficient'] ? 'The current limit is sufficient.' : 'The current limit is too small: at 150% the filter would take more than one shard.');
+            $this->out($advice['sufficient'] ? 'The current limit is sufficient.' : 'The current limit is below the recommendation.');
         }
+        $this->out('Current MISP.fast_lookup_valkey_shard_bytes: ' . ($advice['configured_shard_bytes'] === null
+            ? 'not set (shards of at most ' . $bytes(FastLookupFilter::SHARD_BYTES) . ')' : $bytes($advice['configured_shard_bytes'])));
         // Never suggest lowering a larger limit.
         $limit = max($recommended, $advice['current'] ?? 0);
         $this->out('');
-        $this->out('Apply at runtime:');
-        $this->out("  CONFIG SET $setting $limit");
-        $this->out('Persist it in valkey.conf:');
-        $this->out("  $setting $limit");
-        $this->out('or as a server argument:');
-        $this->out("  --$setting $limit");
+        $this->out('1. Persist the limit on every Valkey node, replicas included, in valkey.conf:');
+        $this->out("     $setting $limit");
+        $this->out('   or as a server argument:');
+        $this->out("     --$setting $limit");
+        $this->out('   then restart the node, or apply it at runtime with:');
+        $this->out("     CONFIG SET $setting $limit");
+        $this->out('2. Only once every node has it persisted, opt in to shards of that size:');
+        $this->out('     app/Console/cake Admin setSetting MISP.fast_lookup_valkey_shard_bytes ' . $advice['shard_bytes']);
+        $this->out("   A Bloom filter larger than a node's $setting prevents that node from loading its data at start-up.");
+        $this->out('3. Rebuild the index for fewer shards to take effect:');
+        $this->out('     app/Console/cake Admin rebuildFastLookup');
         if (empty($this->params['apply'])) {
             return;
         }
@@ -399,8 +406,8 @@ class AdminShell extends AppShell
             $this->error($e->getMessage());
             return;
         }
-        $this->out("Set $setting to $recommended at runtime. It is not persisted across restarts unless the Valkey configuration file is updated.");
-        $this->out('Persist it before the next build: valkey-bloom refuses to load a filter larger than its limit, so a restart or replica with a lower limit cannot load the index.');
+        $this->out("Set $setting to $recommended at runtime only: it does not persist across restarts.");
+        $this->out('On its own it changes nothing: shards stay at most ' . FastLookupFilter::SHARD_BYTES . ' bytes until MISP.fast_lookup_valkey_shard_bytes is set.');
     }
 
     private function runFastLookupCommand(bool $rebuild, bool $pendingOnly): void

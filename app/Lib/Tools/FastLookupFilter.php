@@ -64,7 +64,11 @@ class FastLookupFilter
     const LEGACY_PREFIX = 'misp:fast_lookup:v3:';
     /** The TYPE of a RedisBloom and of a valkey-bloom filter. */
     const BLOOM_TYPES = ['MBbloom--', 'bloomfltr'];
-    /** Half of valkey-bloom's default limit; the shard size when the server has none. */
+    /**
+     * The default shard size, half valkey-bloom's default limit. Larger shards
+     * need an opt-in: a node whose limit is below a Bloom object's size
+     * cannot load its data at start-up.
+     */
     const SHARD_BYTES = 67108864;
     const MEMORY_LIMIT_CONFIG = 'bf.bloom-memory-usage-limit';
     /** valkey-bloom's default bf.bloom-memory-usage-limit. */
@@ -93,14 +97,16 @@ class FastLookupFilter
     private $scope;
     private $redis;
     private $shardBytes;
+    private $valkeyShardBytes;
 
     /**
      * $shardBytes exists for tests: it forces several shards at small sizes.
-     * Null derives it from the server's Bloom object limit at reserve.
+     * Null derives it at reserve from SHARD_BYTES, or the $valkeyShardBytes
+     * opt-in, capped by valkey-bloom's live limit (shardBytesFor).
      */
-    public function __construct(string $namespace, array $scope, $redis = null, ?int $shardBytes = null)
+    public function __construct(string $namespace, array $scope, $redis = null, ?int $shardBytes = null, ?int $valkeyShardBytes = null)
     {
-        if ($shardBytes !== null && $shardBytes < 1) {
+        if (($shardBytes !== null && $shardBytes < 1) || ($valkeyShardBytes !== null && $valkeyShardBytes < 1)) {
             throw new InvalidArgumentException('Invalid fastLookup shard size.');
         }
         if (empty($scope['attribute_types']) || !is_array($scope['attribute_types'])) {
@@ -124,6 +130,7 @@ class FastLookupFilter
         $this->legacyPrefix = self::LEGACY_PREFIX . $hash . ':';
         $this->redis = $redis;
         $this->shardBytes = $shardBytes;
+        $this->valkeyShardBytes = $valkeyShardBytes;
     }
 
     public static function bucketsFor(int $entries): int
@@ -155,10 +162,19 @@ class FastLookupFilter
         return max(1, (int)ceil(self::estimatedFilterBytes($capacity, $rate) / $shardBytes));
     }
 
-    /** The shard size for a server Bloom object limit; null (no such limit) keeps SHARD_BYTES. */
-    public static function shardBytesFor(?int $memoryLimit): int
+    /**
+     * SHARD_BYTES, or the opt-in, never above what the live limit accepts. A
+     * null limit (RedisBloom, or unreadable) keeps SHARD_BYTES.
+     */
+    public static function shardBytesFor(?int $memoryLimit, ?int $optIn = null): int
     {
-        return $memoryLimit === null ? self::SHARD_BYTES : max(1, (int)floor(self::MEMORY_LIMIT_SHARE * $memoryLimit));
+        return $memoryLimit === null ? self::SHARD_BYTES : min($optIn ?? self::SHARD_BYTES, self::limitShardBytes($memoryLimit));
+    }
+
+    /** The largest shard a Bloom object limit accepts. */
+    public static function limitShardBytes(int $memoryLimit): int
+    {
+        return max(1, (int)floor(self::MEMORY_LIMIT_SHARE * $memoryLimit));
     }
 
     /** The smallest limit, in whole MiB and never below the default, whose shard holds the whole filter. */
@@ -308,7 +324,8 @@ class FastLookupFilter
         ];
     }
 
-    public function reserve(string $generation, string $fingerprint, int $capacity, float $rate, int $rangeEntries): void
+    /** Returns a warning when valkey-bloom's limit could not be read, else null. */
+    public function reserve(string $generation, string $fingerprint, int $capacity, float $rate, int $rangeEntries): ?string
     {
         $this->identifier($generation);
         $this->identifier($fingerprint);
@@ -316,11 +333,12 @@ class FastLookupFilter
             throw new InvalidArgumentException('Invalid fastLookup filter sizing.');
         }
         $shardBytes = $this->shardBytes;
+        $unreadable = false;
         if ($shardBytes === null) {
             try {
-                $shardBytes = self::shardBytesFor($this->memoryLimit());
+                $shardBytes = self::shardBytesFor($this->memoryLimit(), $this->valkeyShardBytes);
             } catch (FastLookupIndexUnavailableException $e) {
-                // CONFIG renamed, disabled or refused: the default fits valkey-bloom's default limit.
+                $unreadable = true;
                 $shardBytes = self::SHARD_BYTES;
             }
         }
@@ -341,7 +359,7 @@ class FastLookupFilter
                 'fingerprint' => '', 'building_fingerprint' => '', 'revision' => '0', 'ready' => '0',
                 'scope' => json_encode($this->scope, JSON_THROW_ON_ERROR)]]);
         }
-        $this->evaluate($this->bloomTypesScript() . <<<'LUA'
+        $bloomType = $this->evaluate($this->bloomTypesScript() . <<<'LUA'
 if redis.call('HGET', KEYS[1], 'live') == ARGV[1] then return redis.error_reply('a rebuild must use a fresh generation') end
 for i = 2, #KEYS do
     if redis.call('EXISTS', KEYS[i]) ~= 0 then return redis.error_reply('generation keys already exist') end
@@ -365,7 +383,7 @@ end
 redis.call('HSET', KEYS[2], '!', ARGV[1], 'capacity', ARGV[8], 'rate', ARGV[4], 'inserted', '0', 'stale', '0', 'buckets', ARGV[5], 'cursor', '0',
     'shards', ARGV[7], 'bloom_type', bloomType, 'p4', string.rep('0', 33), 'p6', string.rep('0', 129), 'pv', '0')
 redis.call('HSET', KEYS[1], 'building', ARGV[1], 'building_fingerprint', ARGV[2], 'schema', ARGV[6])
-return 1
+return bloomType
 LUA
             , array_merge([$this->metaKey(), $this->infoKey($generation)], $this->filterKeys($generation, $shards)),
             [$generation, $fingerprint, (string)self::shardCapacity($capacity, $shards), rtrim(sprintf('%.10F', $rate), '0'),
@@ -387,6 +405,9 @@ LUA
             }
         }
         $this->deleteGenerations(array_values(array_filter([$live, $generation])));
+        return $unreadable && $bloomType === 'bloomfltr'
+            ? 'Could not read ' . self::MEMORY_LIMIT_CONFIG . ' from Valkey; the fastLookup filter uses the default ' . self::SHARD_BYTES . '-byte shards.'
+            : null;
     }
 
     public function add(string $generation, array $prepared): void

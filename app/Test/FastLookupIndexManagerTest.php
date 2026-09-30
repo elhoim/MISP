@@ -524,6 +524,8 @@ class FastLookupIndexManagerTest extends TestCase
         $this->assertSame((int)ceil(FastLookupFilter::estimatedFilterBytes($rebuild, 0.001)), $advice['estimated_bytes']);
         $this->assertSame(FastLookupFilter::recommendedMemoryLimit($rebuild, 0.001), $advice['recommended']);
         $this->assertSame(270532608, $advice['recommended'], '242,621,791 bytes / 0.9, rounded up to 258 MiB.');
+        $this->assertSame(243479347, $advice['shard_bytes'], 'The opt-in: 90% of the recommended limit.');
+        $this->assertNull($advice['configured_shard_bytes']);
         $this->assertSame(134217728, $advice['current']);
         $this->assertTrue($advice['readable']);
         $this->assertFalse($advice['sufficient']);
@@ -531,6 +533,34 @@ class FastLookupIndexManagerTest extends TestCase
 
         $this->filter->memoryLimit = 270532608;
         $this->assertTrue($manager->memoryLimitAdvice()['sufficient']);
+    }
+
+    public function testMemoryLimitAdviceReportsTheConfiguredOptIn()
+    {
+        $this->seed();
+        FastLookupConfig::$valkeyShardBytes = 120795955;
+        $this->assertSame(120795955, $this->manager()->memoryLimitAdvice()['configured_shard_bytes']);
+    }
+
+    public function testReserveWarningIsLogged()
+    {
+        $this->attribute = new class extends FastLookupLifecycleAttribute {
+            public $logs = [];
+            public function log($message, $level) { $this->logs[] = [$level, $message]; }
+        };
+        $this->seed();
+        $this->filter = new class extends FastLookupLifecycleFilter {
+            public function reserve($generation, $fingerprint, $capacity, $rate, $rangeEntries)
+            {
+                parent::reserve($generation, $fingerprint, $capacity, $rate, $rangeEntries);
+                return 'Could not read bf.bloom-memory-usage-limit from Valkey.';
+            }
+        };
+        $this->attribute->db->leaseFilter = $this->filter;
+        $manager = $this->manager();
+        $manager->startRebuild();
+        $manager->runBatch(1);
+        $this->assertSame(1, $this->warnings('Could not read bf.bloom-memory-usage-limit'));
     }
 
     public function testMemoryLimitAdviceKeepsTheLiveGenerationFloor()

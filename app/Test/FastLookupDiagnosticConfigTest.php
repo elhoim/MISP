@@ -80,4 +80,21 @@ class FastLookupDiagnosticConfigTest extends TestCase
         $this->assertStringContainsString("'fast_lookup_false_positive_rate' => array(", $source);
         $this->assertStringContainsString('FastLookupConfig::DEFAULT_FALSE_POSITIVE_RATE', $source);
     }
+
+    public function testValkeyShardBytesSettingIsAnOptionalByteCount(): void
+    {
+        $source = file_get_contents(__DIR__ . '/../Model/Server.php');
+        $this->assertStringContainsString("'fast_lookup_valkey_shard_bytes' => array(", $source);
+        $this->assertStringContainsString('prevents that node from loading its data at start-up', $source);
+        $this->assertNull(FastLookupConfig::valkeyShardBytes());
+        Configure::write('MISP.fast_lookup_valkey_shard_bytes', '241591910');
+        $this->assertSame(241591910, FastLookupConfig::valkeyShardBytes());
+        foreach (['0', '-1', 'lots', 1.5, '64MiB'] as $invalid) {
+            Configure::write('MISP.fast_lookup_valkey_shard_bytes', $invalid);
+            $this->assertNull(FastLookupConfig::valkeyShardBytes(), 'An invalid value keeps the default shards: ' . json_encode($invalid));
+            $this->assertIsString(FastLookupConfig::validateValkeyShardBytesSetting($invalid));
+        }
+        $this->assertTrue(FastLookupConfig::validateValkeyShardBytesSetting(''));
+        $this->assertTrue(FastLookupConfig::validateValkeyShardBytesSetting(241591910));
+    }
 }

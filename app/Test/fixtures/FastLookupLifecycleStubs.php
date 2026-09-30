@@ -16,6 +16,8 @@ class Configure
 class FastLookupConfig
 {
     public static $fingerprint = 'scope-one';
+    public static $valkeyShardBytes;
+    public static function valkeyShardBytes() { return self::$valkeyShardBytes; }
     public static function scope($attribute = null) { return ['attribute_types' => ['domain'], 'published_only' => true, 'max_values' => 10000, 'matching' => ['exact', 'ip_cidr', 'parent_domain'], 'false_positive_rate' => 0.001]; }
     public static function namespaceFor($attribute) { return 'test-database'; }
     public static function fingerprint($attribute) { return self::$fingerprint; }

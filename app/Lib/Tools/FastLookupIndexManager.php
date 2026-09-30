@@ -108,7 +108,10 @@ class FastLookupIndexManager
         if ($this->filter === null) {
             $this->filter = new FastLookupFilter(
                 FastLookupConfig::namespaceFor($this->attribute),
-                FastLookupConfig::scope($this->attribute)
+                FastLookupConfig::scope($this->attribute),
+                null,
+                null,
+                FastLookupConfig::valkeyShardBytes()
             );
         }
         return $this->filter;
@@ -718,9 +721,9 @@ class FastLookupIndexManager
     /**
      * valkey-bloom refuses a Bloom object over bf.bloom-memory-usage-limit: the
      * limit that fits, in one shard, the filter a rebuild would reserve once
-     * the in-scope attributes grow by MEMORY_LIMIT_GROWTH. 'current' is null
-     * when the server has no such setting (RedisBloom) or, with 'readable'
-     * false, when it could not be read.
+     * the in-scope attributes grow by MEMORY_LIMIT_GROWTH, and the shard size
+     * opt-in that uses it. 'current' is null when the server has no such
+     * setting (RedisBloom) or, with 'readable' false, when it could not be read.
      */
     public function memoryLimitAdvice(): array
     {
@@ -744,6 +747,8 @@ class FastLookupIndexManager
             'false_positive_rate' => $rate,
             'estimated_bytes' => (int)ceil(FastLookupFilter::estimatedFilterBytes($capacity, $rate)),
             'recommended' => $recommended,
+            'shard_bytes' => FastLookupFilter::limitShardBytes($recommended),
+            'configured_shard_bytes' => FastLookupConfig::valkeyShardBytes(),
             'current' => $current,
             'readable' => $readable,
             'sufficient' => $current === null ? null : $current >= $recommended,
@@ -841,8 +846,11 @@ class FastLookupIndexManager
             // dirty events, earlier ones through the scan.
             $table = $this->db->fullTableName($this->attribute);
             $highWater = $this->query("SELECT MAX(id) AS high_water FROM $table")->fetchColumn();
-            $this->filter()->reserve($build['generation'], $build['fingerprint'], (int)$build['capacity'],
+            $warning = $this->filter()->reserve($build['generation'], $build['fingerprint'], (int)$build['capacity'],
                 (float)$build['rate'], (int)$build['range_entries']);
+            if (is_string($warning)) {
+                $this->attribute->log($warning, LOG_WARNING);
+            }
             $state['build'] = array_merge($build, ['reserved' => true, 'cursor' => '0',
                 'high_water' => $highWater ? (string)$highWater : '0', 'processed' => 0, 'scan_complete' => false,
                 'started_at' => time()]);

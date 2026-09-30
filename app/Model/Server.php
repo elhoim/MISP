@@ -2036,6 +2036,11 @@ class Server extends AppModel
         return FastLookupConfig::validateFalsePositiveRateSetting($value);
     }
 
+    public function testFastLookupValkeyShardBytes($value)
+    {
+        return FastLookupConfig::validateValkeyShardBytesSetting($value);
+    }
+
     public function testForPositiveInteger($value)
     {
         if ((is_int($value) && $value >= 0) || ctype_digit($value)) {
@@ -7092,6 +7097,14 @@ class Server extends AppModel
                     'test' => 'testFastLookupFalsePositiveRate',
                     'type' => 'string',
                     'null' => false,
+                ),
+                'fast_lookup_valkey_shard_bytes' => array(
+                    'level' => self::SETTING_OPTIONAL,
+                    'description' => __('Valkey only: the largest fast lookup Bloom filter shard, in bytes, capped at 90% of the live bf.bloom-memory-usage-limit. Unset, shards stay at most 64 MiB, which is safe with any limit of 64 MiB or more. Set it only after bf.bloom-memory-usage-limit is persisted in valkey.conf or the server arguments on EVERY Valkey node, replicas included: a Bloom filter larger than a node\'s limit prevents that node from loading its data at start-up. Run app/Console/cake Admin valkeyMemoryLimit for the values; a rebuild applies it.'),
+                    'value' => '',
+                    'test' => 'testFastLookupValkeyShardBytes',
+                    'type' => 'numeric',
+                    'null' => true,
                 ),
                 'redis_host' => array(
                     'level' => 0,

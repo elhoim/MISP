@@ -25,43 +25,46 @@ touches several keys of one generation.
 
 ## Valkey setup
 
-Valkey needs no configuration: under valkey-bloom's default
-`bf.bloom-memory-usage-limit` of 128 MiB the filter is split into shards
-that fit it. A larger limit gives fewer shards, so the recommended step is to
-size the limit for the instance:
+Valkey needs no configuration. By default the filter is split into shards of
+at most 64 MiB, which is safe with any `bf.bloom-memory-usage-limit` of 64 MiB
+or more. A lower limit gives smaller shards: a shard is never larger than 90%
+of the limit `CONFIG GET` reports when the generation is reserved. On its own,
+a higher limit never makes the shards larger.
+
+Larger shards mean fewer of them. They are an opt-in, because the limit is
+enforced when a node loads its data: **a Bloom filter larger than a node's
+`bf.bloom-memory-usage-limit` prevents that node from loading its data at
+start-up**, and the node does not start. A limit raised only at runtime is
+lost on restart. To size the shards for the instance, run:
 
 ```bash
 app/Console/cake Admin valkeyMemoryLimit
-app/Console/cake Admin valkeyMemoryLimit --apply
 ```
 
-The command counts the in-scope attributes and prints the filter capacity a
-rebuild would reserve at 150% of that count, the
-`bf.bloom-memory-usage-limit` that holds it in one shard (at least 128 MiB,
-rounded up to whole MiB), the server's current value, and whether it is
-already sufficient. It then prints the commands to apply it:
+It counts the in-scope attributes and prints, in order:
 
-```text
-CONFIG SET bf.bloom-memory-usage-limit <bytes>
-```
+1. The recommended `bf.bloom-memory-usage-limit`. This is the limit that holds,
+   in one shard, the filter a rebuild would reserve at 150% of the current
+   count. It is at least 128 MiB and rounded up to whole MiB. The command also
+   prints the server's current value.
+2. How to persist it on **every** Valkey node, replicas included. Use either
+   the `valkey.conf` line `bf.bloom-memory-usage-limit <bytes>` or the server
+   argument `--bf.bloom-memory-usage-limit <bytes>`. Then restart the node, or
+   apply the value with `CONFIG SET bf.bloom-memory-usage-limit <bytes>`.
+3. The opt-in, to run only once every node has the limit persisted:
+   `app/Console/cake Admin setSetting MISP.fast_lookup_valkey_shard_bytes <bytes>`,
+   where the value is 90% of the recommended limit. Shards are never larger
+   than this setting, nor than 90% of the running limit.
+4. That a rebuild (`rebuildFastLookup`) is needed for fewer shards to take
+   effect. Existing generations keep their layout.
 
-at runtime, and for a persistent setting either the `valkey.conf` line
+`--apply` raises the running limit with `CONFIG SET` and never lowers it. It
+does not persist, and it does not set `MISP.fast_lookup_valkey_shard_bytes`,
+so on its own it changes no shard size. On Redis with RedisBloom, which has no
+such setting, the command says that no setting is needed, and the opt-in is
+ignored. When Valkey's limit cannot be read at reserve (a renamed or disabled
+`CONFIG`), the build uses 64 MiB shards and logs a warning.
 
-```text
-bf.bloom-memory-usage-limit <bytes>
-```
-
-or the server argument `--bf.bloom-memory-usage-limit <bytes>`. `--apply`
-runs the `CONFIG SET` itself. It never lowers a larger limit, and the change
-does not survive a restart unless the configuration file is updated too.
-Always set it persistently, on every replica as well: valkey-bloom refuses to
-load a filter larger than its current limit (`RESTORE` answers `ERR Bad data
-format`), so a server restarted, or a replica synced, with a lower limit
-cannot load shards built under the higher one. On Redis with RedisBloom, which
-has no such setting, the command says so and changes nothing.
-
-Set the limit before the first build. On an existing index, the new limit
-applies from the next generation, so run `rebuildFastLookup` afterwards.
 Re-run the step as the instance grows.
 
 ## Configuration and operation
@@ -73,6 +76,7 @@ Re-run the step as the instance grows.
 | `MISP.fast_lookup_published_only` | `true` | Include only published events; changing this policy requires a backfill. |
 | `MISP.fast_lookup_max_values` | `10000` | Positive maximum submitted values per request. Changing this limit does not rebuild the index. |
 | `MISP.fast_lookup_false_positive_rate` | `0.001` | Target Bloom filter false-positive rate, `0.0001`-`0.05`. Part of the index fingerprint: changing it requires a rebuild. |
+| `MISP.fast_lookup_valkey_shard_bytes` | unset | Valkey only: opt in to Bloom filter shards above 64 MiB, in bytes, capped at 90% of the running `bf.bloom-memory-usage-limit`. Set it only after that limit is persisted on every node, replicas included; see [Valkey setup](#valkey-setup). Applies from the next rebuild. |
 
 The exact default types are `domain`, `domain|ip`, `hostname`, `hostname|port`,
 `ip-src`, `ip-dst`, `ip-src|port`, `ip-dst|port`, `md5`, `sha1`, `sha256`, `sha512`,
@@ -152,9 +156,10 @@ false-positive rate. A token's shard is its digest bytes 4–7 modulo S; its
 posting bucket uses bytes 0–3. valkey-bloom refuses a Bloom object over
 `bf.bloom-memory-usage-limit` (128 MiB by default), which a single filter
 reaches at about 25M in-scope attributes. When a generation is reserved, the
-shard size is 90% of that limit as `CONFIG GET` reports it, so every shard
-fits; on RedisBloom, or when `CONFIG GET` fails, it is 64 MiB. A shard count
-above 1024 fails the reserve. See [Valkey setup](#valkey-setup). The info hash
+shard size is 64 MiB, or `MISP.fast_lookup_valkey_shard_bytes` when set, and
+never more than 90% of the limit `CONFIG GET` reports, so every shard fits; on
+RedisBloom, or when `CONFIG GET` fails, it is 64 MiB. A shard count above 1024
+fails the reserve. See [Valkey setup](#valkey-setup). The info hash
 records the shard count (`shards`) and the filter type (`bloom_type`); a
 generation built before sharding has one filter
 `g:<generation>:bf` and neither field, and is served as it is. A full shard

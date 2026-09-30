@@ -202,16 +202,32 @@ class FastLookupIndexShellTest extends TestCase
             'Filter capacity for 150% (45000000 attributes): 135000000 tokens at a false-positive rate of 0.001, about 242621791 bytes (231.4 MiB)',
             'Recommended bf.bloom-memory-usage-limit: 270532608 bytes (258.0 MiB)',
             'Current bf.bloom-memory-usage-limit: 134217728 bytes (128.0 MiB)',
-            'The current limit is too small: at 150% the filter would take more than one shard.',
+            'The current limit is below the recommendation.',
+            'Current MISP.fast_lookup_valkey_shard_bytes: not set (shards of at most 67108864 bytes (64.0 MiB))',
             '',
-            'Apply at runtime:',
-            '  CONFIG SET bf.bloom-memory-usage-limit 270532608',
-            'Persist it in valkey.conf:',
-            '  bf.bloom-memory-usage-limit 270532608',
-            'or as a server argument:',
-            '  --bf.bloom-memory-usage-limit 270532608',
+            '1. Persist the limit on every Valkey node, replicas included, in valkey.conf:',
+            '     bf.bloom-memory-usage-limit 270532608',
+            '   or as a server argument:',
+            '     --bf.bloom-memory-usage-limit 270532608',
+            '   then restart the node, or apply it at runtime with:',
+            '     CONFIG SET bf.bloom-memory-usage-limit 270532608',
+            '2. Only once every node has it persisted, opt in to shards of that size:',
+            '     app/Console/cake Admin setSetting MISP.fast_lookup_valkey_shard_bytes 243479347',
+            "   A Bloom filter larger than a node's bf.bloom-memory-usage-limit prevents that node from loading its data at start-up.",
+            '3. Rebuild the index for fewer shards to take effect:',
+            '     app/Console/cake Admin rebuildFastLookup',
         ], $shell->output);
         $this->assertSame([], $redis->memoryLimitSets, 'Nothing changes without --apply.');
+    }
+
+    public function testValkeyMemoryLimitShowsTheConfiguredOptIn()
+    {
+        FastLookupConfig::$valkeyShardBytes = 120795955;
+        [$shell] = $this->memoryLimitShell(134217728);
+        $shell->valkeyMemoryLimit();
+        $this->assertContains('Current MISP.fast_lookup_valkey_shard_bytes: 120795955 bytes (115.2 MiB)', $shell->output);
+        $constructed = FastLookupFilter::constructed();
+        $this->assertSame(120795955, end($constructed)[4] ?? null, 'The manager hands the opt-in to the filter.');
     }
 
     public function testValkeyMemoryLimitAppliesTheRecommendationAtRuntime()
@@ -219,8 +235,11 @@ class FastLookupIndexShellTest extends TestCase
         [$shell, $redis] = $this->memoryLimitShell(134217728, true);
         $shell->valkeyMemoryLimit();
         $this->assertSame([270532608], $redis->memoryLimitSets);
-        $this->assertContains('Set bf.bloom-memory-usage-limit to 270532608 at runtime. It is not persisted across restarts unless the Valkey configuration file is updated.', $shell->output);
-        $this->assertStringContainsString('restart or replica with a lower limit cannot load the index', end($shell->output));
+        $this->assertSame([
+            'Set bf.bloom-memory-usage-limit to 270532608 at runtime only: it does not persist across restarts.',
+            'On its own it changes nothing: shards stay at most 67108864 bytes until MISP.fast_lookup_valkey_shard_bytes is set.',
+        ], array_slice($shell->output, -2));
+        $this->assertNull(FastLookupConfig::$valkeyShardBytes, '--apply never sets the opt-in.');
     }
 
     public function testValkeyMemoryLimitNeverLowersALargerLimit()
@@ -229,8 +248,8 @@ class FastLookupIndexShellTest extends TestCase
         $shell->valkeyMemoryLimit();
         $this->assertSame([], $redis->memoryLimitSets);
         $this->assertContains('The current limit is sufficient.', $shell->output);
-        $this->assertContains('  CONFIG SET bf.bloom-memory-usage-limit 536870912', $shell->output, 'The commands keep the larger limit.');
-        $this->assertContains('  bf.bloom-memory-usage-limit 536870912', $shell->output);
+        $this->assertContains('     CONFIG SET bf.bloom-memory-usage-limit 536870912', $shell->output, 'The commands keep the larger limit.');
+        $this->assertContains('     bf.bloom-memory-usage-limit 536870912', $shell->output);
         $this->assertSame('Not changed: the current bf.bloom-memory-usage-limit is already at least the recommended value.', end($shell->output));
     }
 
@@ -252,7 +271,7 @@ class FastLookupIndexShellTest extends TestCase
             $this->assertSame('The current bf.bloom-memory-usage-limit cannot be read, so it is not changed.', $e->getMessage());
         }
         $this->assertContains('Current bf.bloom-memory-usage-limit: unreadable (CONFIG GET failed or is disabled)', $shell->output);
-        $this->assertContains('  CONFIG SET bf.bloom-memory-usage-limit 270532608', $shell->output);
+        $this->assertContains('     CONFIG SET bf.bloom-memory-usage-limit 270532608', $shell->output);
         $this->assertSame([], $redis->memoryLimitSets);
     }
 

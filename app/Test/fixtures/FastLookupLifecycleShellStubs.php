@@ -46,13 +46,18 @@ class FastLookupFilter extends FastLookupLifecycleFilter
     {
         return max(1, $capacity) * -log($rate) / (log(2) ** 2) / 8;
     }
+    const SHARD_BYTES = 67108864;
+    /** Constructor arguments of every instance, in order. */
+    public static function constructed() { return self::$shared['constructed']; }
+    public static function limitShardBytes(int $memoryLimit): int { return max(1, (int)floor(0.9 * $memoryLimit)); }
     public static function recommendedMemoryLimit(int $capacity, float $rate): int
     {
         return max(134217728, (int)ceil(self::estimatedFilterBytes($capacity, $rate) / 0.9 / 1048576) * 1048576);
     }
     public function __construct(...$args)
     {
-        if (self::$shared === null) { self::$shared = ['meta' => [], 'generations' => [], 'lease' => null, 'available' => true, 'refuse' => false, 'limit' => null, 'sets' => []]; }
+        if (self::$shared === null) { self::$shared = ['meta' => [], 'generations' => [], 'lease' => null, 'available' => true, 'refuse' => false, 'limit' => null, 'sets' => [], 'constructed' => []]; }
+        self::$shared['constructed'][] = $args;
         $this->memoryLimit =& self::$shared['limit'];
         $this->memoryLimitSets =& self::$shared['sets'];
         $this->available =& self::$shared['available'];
