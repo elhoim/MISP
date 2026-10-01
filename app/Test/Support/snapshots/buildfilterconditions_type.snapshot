@@ -1,0 +1,13 @@
+{
+    "AND": [
+        {
+            "OR": {
+                "OR": {
+                    "Attribute.type IN": [
+                        "ip-dst"
+                    ]
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,13 @@
+{
+    "AND": [
+        {
+            "OR": {
+                "OR": {
+                    "Object.name IN": [
+                        "test-object-a"
+                    ]
+                }
+            }
+        }
+    ]
+}
