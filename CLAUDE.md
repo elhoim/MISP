@@ -22,9 +22,19 @@ cd app && composer install
 # Lint PHP files
 ./app/Vendor/bin/parallel-lint --exclude app/Lib/cakephp/ --exclude app/Vendor/ -e php,ctp app/
 
-# Run PHPUnit tests
-./app/Vendor/bin/phpunit app/Test/
+# Run the unit test suite (no database required)
+./app/Vendor/bin/phpunit -c app/phpunit.xml --testsuite unit
+
+# Run the unit suite with coverage
+./app/Vendor/bin/phpunit -c app/phpunit.xml --testsuite unit --coverage-text
+
+# Run the integration suite (needs a configured instance and database)
+sudo -u www-data ./app/Vendor/bin/phpunit -c app/phpunit-integration.xml
 ```
+
+`-c` is required: the tests load their framework stubs from
+`app/Test/bootstrap.php`, which the config file wires up. See `docs/testing.md`
+for the three test layers and their capability boundaries.
 
 **Python Tests (PyMISP):**
 ```bash

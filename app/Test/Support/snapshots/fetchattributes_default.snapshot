@@ -1,0 +1,173 @@
+[
+    {
+        "Attribute": {
+            "category": "Network activity",
+            "comment": "",
+            "deleted": false,
+            "disable_correlation": false,
+            "distribution": 5,
+            "event_id": "<id:1>",
+            "first_seen": null,
+            "id": "<id:2>",
+            "last_seen": null,
+            "object_id": 0,
+            "object_relation": null,
+            "sharing_group_id": 0,
+            "timestamp": "<time>",
+            "to_ids": true,
+            "type": "ip-dst",
+            "uuid": "<id:3>",
+            "value": "8.8.8.8",
+            "value1": "8.8.8.8",
+            "value2": ""
+        },
+        "AttributeTag": [],
+        "Event": {
+            "Org": {
+                "id": "<id:4>",
+                "name": "ORGNAME",
+                "uuid": "<id:5>"
+            },
+            "Orgc": {
+                "id": "<id:4>",
+                "name": "ORGNAME",
+                "uuid": "<id:5>"
+            },
+            "ThreatLevel": {
+                "id": "<id:6>",
+                "name": "Medium"
+            },
+            "analysis": 0,
+            "date": "<time>",
+            "distribution": 3,
+            "id": "<id:1>",
+            "info": "MispAttribute fetch characterization",
+            "org_id": "<id:4>",
+            "orgc_id": "<id:4>",
+            "threat_level_id": 1,
+            "timestamp": "<time>",
+            "user_id": "<id:7>",
+            "uuid": "<id:8>"
+        },
+        "Object": {
+            "distribution": null,
+            "id": null,
+            "sharing_group_id": null,
+            "timestamp": null
+        }
+    },
+    {
+        "Attribute": {
+            "category": "Network activity",
+            "comment": "",
+            "deleted": false,
+            "disable_correlation": false,
+            "distribution": 5,
+            "event_id": "<id:1>",
+            "first_seen": null,
+            "id": "<id:9>",
+            "last_seen": null,
+            "object_id": 0,
+            "object_relation": null,
+            "sharing_group_id": 0,
+            "timestamp": "<time>",
+            "to_ids": true,
+            "type": "domain",
+            "uuid": "<id:10>",
+            "value": "example.com",
+            "value1": "example.com",
+            "value2": ""
+        },
+        "AttributeTag": [],
+        "Event": {
+            "Org": {
+                "id": "<id:4>",
+                "name": "ORGNAME",
+                "uuid": "<id:5>"
+            },
+            "Orgc": {
+                "id": "<id:4>",
+                "name": "ORGNAME",
+                "uuid": "<id:5>"
+            },
+            "ThreatLevel": {
+                "id": "<id:6>",
+                "name": "Medium"
+            },
+            "analysis": 0,
+            "date": "<time>",
+            "distribution": 3,
+            "id": "<id:1>",
+            "info": "MispAttribute fetch characterization",
+            "org_id": "<id:4>",
+            "orgc_id": "<id:4>",
+            "threat_level_id": 1,
+            "timestamp": "<time>",
+            "user_id": "<id:7>",
+            "uuid": "<id:8>"
+        },
+        "Object": {
+            "distribution": null,
+            "id": null,
+            "sharing_group_id": null,
+            "timestamp": null
+        }
+    },
+    {
+        "Attribute": {
+            "category": "Payload delivery",
+            "comment": "",
+            "deleted": false,
+            "disable_correlation": false,
+            "distribution": 5,
+            "event_id": "<id:1>",
+            "first_seen": null,
+            "id": "<id:11>",
+            "last_seen": null,
+            "object_id": 0,
+            "object_relation": null,
+            "sharing_group_id": 0,
+            "timestamp": "<time>",
+            "to_ids": true,
+            "type": "md5",
+            "uuid": "<id:12>",
+            "value": "d41d8cd98f00b204e9800998ecf8427e",
+            "value1": "d41d8cd98f00b204e9800998ecf8427e",
+            "value2": ""
+        },
+        "AttributeTag": [],
+        "Event": {
+            "Org": {
+                "id": "<id:4>",
+                "name": "ORGNAME",
+                "uuid": "<id:5>"
+            },
+            "Orgc": {
+                "id": "<id:4>",
+                "name": "ORGNAME",
+                "uuid": "<id:5>"
+            },
+            "ThreatLevel": {
+                "id": "<id:6>",
+                "name": "Medium"
+            },
+            "analysis": 0,
+            "date": "<time>",
+            "distribution": 3,
+            "id": "<id:1>",
+            "info": "MispAttribute fetch characterization",
+            "org_id": "<id:4>",
+            "orgc_id": "<id:4>",
+            "threat_level_id": 1,
+            "timestamp": "<time>",
+            "user_id": "<id:7>",
+            "uuid": "<id:8>"
+        },
+        "Object": {
+            "distribution": null,
+            "id": null,
+            "sharing_group_id": null,
+            "timestamp": null
+        }
+    }
+]
